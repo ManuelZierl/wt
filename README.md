@@ -24,7 +24,17 @@ cargo install --path crates/wt-cli --locked
 
 ### Install on another Ubuntu machine
 
-For a private repository, copy this checkout (including `Cargo.lock`) to the machine, install the Rust toolchain named in `rust-toolchain.toml` using [rustup](https://rustup.rs/), then run from the checkout:
+For a private repository, copy this checkout (including `Cargo.lock`) to the machine. A transferable source archive can be made without granting the destination access to GitHub:
+
+```bash
+mkdir -p dist
+git archive --format=tar.gz --output=dist/wt-source.tar.gz HEAD
+# Transfer dist/wt-source.tar.gz to the destination, then unpack it there:
+mkdir wt-source && tar -xzf wt-source.tar.gz -C wt-source
+cd wt-source
+```
+
+On the destination install `build-essential` and the Rust toolchain named in `rust-toolchain.toml` using [rustup](https://rustup.rs/), then run from the unpacked checkout:
 
 ```bash
 cargo install --path crates/wt-cli --locked
