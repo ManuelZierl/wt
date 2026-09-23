@@ -305,3 +305,90 @@ fn unknown_watched_evidence_and_stale_hash_never_create_acceptances() {
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn malformed_watch_option_cannot_create_an_unwatched_acceptance() {
+    let repo = Repo::new();
+    repo.install("enforced");
+    fs::write(repo.root.path().join("helper.rs"), "reviewed dependency").unwrap();
+    let finding = repo.check()["diagnostics"][0].clone();
+    for watch in [
+        json!(format!("helper.rs={}", digest_text("reviewed dependency"))),
+        Value::Null,
+        json!({"helper.rs": digest_text("reviewed dependency")}),
+    ] {
+        let result = repo.run(
+            "review",
+            json!({"finding_id":finding["finding_id"],
+                "expect_evidence":finding["evidence_digest"],"decision":"acceptable",
+                "rationale":"Reviewed the helper as supporting evidence.","watch":watch}),
+        );
+        assert_eq!(result["exit_code"], 2, "{result}");
+        assert!(result["error"].as_str().unwrap().contains("watch"));
+    }
+    assert!(repo.run("reviews", json!({}))["reviews"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(repo.check()["exit_code"], 1);
+}
+
+#[test]
+fn modified_earlier_rationale_invalidates_the_current_acceptance() {
+    let repo = Repo::new();
+    repo.install("enforced");
+    let finding = repo.check()["diagnostics"][0].clone();
+    let first = repo.accept(&finding);
+    let second = repo.run(
+        "review",
+        json!({"finding_id":finding["finding_id"],
+        "expect_evidence":finding["evidence_digest"],"expect_hash":first["record_digest"],
+        "decision":"accepted_risk","rationale":"Reviewed again; risk accepted."}),
+    );
+    assert_eq!(second["exit_code"], 0, "{second}");
+    assert_eq!(repo.check()["exit_code"], 0);
+
+    fs::write(
+        std::path::Path::new(first["path"].as_str().unwrap()).join("rationale.md"),
+        "Changed earlier review rationale.",
+    )
+    .unwrap();
+    let checked = repo.check();
+    assert_eq!(checked["exit_code"], 2, "{checked}");
+    assert_eq!(checked["complete"], false);
+    assert_eq!(checked["diagnostics"].as_array().unwrap().len(), 1);
+    assert_eq!(repo.run("reviews", json!({}))["exit_code"], 2);
+}
+
+#[test]
+fn altered_history_links_fail_closed() {
+    for break_first in [false, true] {
+        let repo = Repo::new();
+        repo.install("enforced");
+        let finding = repo.check()["diagnostics"][0].clone();
+        let first = repo.accept(&finding);
+        let second = repo.run(
+            "review",
+            json!({"finding_id":finding["finding_id"],
+            "expect_evidence":finding["evidence_digest"],"expect_hash":first["record_digest"],
+            "decision":"acceptable","rationale":"Reviewed a second time."}),
+        );
+        assert_eq!(second["exit_code"], 0, "{second}");
+        let path = std::path::Path::new(
+            if break_first {
+                &first["path"]
+            } else {
+                &second["path"]
+            }
+            .as_str()
+            .unwrap(),
+        )
+        .join("decision.json");
+        let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        record["previous"] = json!(digest_text("unrelated revision"));
+        fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        let checked = repo.check();
+        assert_eq!(checked["exit_code"], 2, "{checked}");
+        assert_eq!(checked["diagnostics"].as_array().unwrap().len(), 1);
+    }
+}

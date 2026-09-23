@@ -160,31 +160,41 @@ fn load_latest(root: &Path, name: &str) -> Result<Option<Stored>> {
             bail!("review history has a missing revision");
         }
     }
-    let Some(revision) = revisions.last().copied() else {
-        return Ok(None);
-    };
-    let base = format!("{relative}/{revision:08}");
-    let bytes = read_bounded(
-        &safe_path(root, &format!("{base}/decision.json"), false)?,
-        MAX_DECISION,
-    )?;
-    let record: Record = serde_json::from_value(parse_json(std::str::from_utf8(&bytes)?)?)?;
-    validate(&record)?;
-    let rationale_bytes = read_bounded(
-        &safe_path(root, &format!("{base}/rationale.md"), false)?,
-        MAX_TEXT,
-    )?;
-    let rationale = String::from_utf8(rationale_bytes)?;
-    if rationale.trim().is_empty() {
-        bail!("review rationale must not be empty");
+    let mut latest = None;
+    let mut previous_digest: Option<String> = None;
+    let finding_id = format!("sha256:{name}");
+    for revision in revisions {
+        let base = format!("{relative}/{revision:08}");
+        let bytes = read_bounded(
+            &safe_path(root, &format!("{base}/decision.json"), false)?,
+            MAX_DECISION,
+        )?;
+        let record: Record = serde_json::from_value(parse_json(std::str::from_utf8(&bytes)?)?)?;
+        validate(&record)?;
+        if record.finding_id != finding_id {
+            bail!("review directory identity mismatch");
+        }
+        let rationale_bytes = read_bounded(
+            &safe_path(root, &format!("{base}/rationale.md"), false)?,
+            MAX_TEXT,
+        )?;
+        let rationale = String::from_utf8(rationale_bytes)?;
+        if rationale.trim().is_empty() {
+            bail!("review rationale must not be empty");
+        }
+        if record.previous.as_deref() != previous_digest.as_deref() {
+            bail!("review history digest link mismatch at revision {revision}");
+        }
+        let digest = record_digest(&bytes, rationale.as_bytes());
+        previous_digest = Some(digest.clone());
+        latest = Some(Stored {
+            record,
+            digest,
+            rationale,
+            revision,
+        });
     }
-    let digest = record_digest(&bytes, rationale.as_bytes());
-    Ok(Some(Stored {
-        record,
-        digest,
-        rationale,
-        revision,
-    }))
+    Ok(latest)
 }
 
 fn validate(record: &Record) -> Result<()> {
@@ -350,7 +360,10 @@ pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
         bail!("invalid finding ID");
     }
     let mut watched = BTreeMap::new();
-    if let Some(values) = options.get("watch").and_then(Value::as_array) {
+    if let Some(watch) = options.get("watch") {
+        let values = watch
+            .as_array()
+            .ok_or_else(|| anyhow!("watch must be an array of PATH=sha256:HASH"))?;
         for value in values {
             let pair = value
                 .as_str()
