@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchtower.local/schemas/waivers.schema.json",
+  "title": "Watchtower waivers",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "waivers"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "waivers": {"type": "array", "items": {"$ref": "#/$defs/waiver"}}
+  },
+  "$defs": {
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "rule_id", "code", "path", "matched_text_digest", "reason"],
+      "properties": {
+        "id": {"type": "string", "pattern": ".*\\S.*"},
+        "rule_id": {"type": "string", "pattern": "^(?:global|local)/[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*$"},
+        "code": {"type": "string", "pattern": ".*\\S.*"},
+        "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+        "matched_text_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "reason": {"type": "string", "pattern": ".*\\S.*"},
+        "occurrence": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

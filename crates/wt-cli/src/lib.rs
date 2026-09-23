@@ -1,0 +1,684 @@
+use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand, ValueEnum};
+use serde_json::{json, Map, Value};
+use std::ffi::OsString;
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::PathBuf;
+
+const MAX_JSON_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum OutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum Optimizer {
+    Auto,
+    Off,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum Mode {
+    Advisory,
+    Enforced,
+    Disabled,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum SchemaName {
+    Rule,
+    Submission,
+    Tests,
+    Config,
+    Result,
+    Plan,
+    Waivers,
+}
+
+#[derive(Clone, Debug, Parser)]
+#[command(name = "wt", version, about = "Watchtower repository checks")]
+pub struct Cli {
+    #[command(flatten)]
+    pub common: Common,
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Clone, Debug, clap::Args)]
+pub struct Common {
+    #[arg(long, global = true, value_name = "PATH")]
+    pub root: Option<PathBuf>,
+    #[arg(long = "global-dir", global = true, value_name = "PATH")]
+    pub global_dir: Option<PathBuf>,
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
+    pub format: OutputFormat,
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    pub color: ColorMode,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum Command {
+    Init {
+        #[arg(long)]
+        global: bool,
+    },
+    New {
+        #[arg(value_name = "JSON")]
+        json: Option<String>,
+        #[arg(long, conflicts_with_all = ["json", "file"])]
+        stdin: bool,
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["json", "stdin"])]
+        file: Option<PathBuf>,
+        #[arg(long)]
+        global: bool,
+    },
+    Check {
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+        #[arg(long = "include-ignored")]
+        include_ignored: bool,
+        #[arg(long = "no-host-ignores")]
+        no_host_ignores: bool,
+        #[arg(long = "no-global")]
+        no_global: bool,
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        #[arg(long, value_enum, default_value_t = Optimizer::Auto)]
+        optimizer: Optimizer,
+        #[arg(long)]
+        changed: bool,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long, value_name = "N")]
+        jobs: Option<u64>,
+        #[arg(long = "max-file-bytes", value_name = "N")]
+        max_file_bytes: Option<u64>,
+        #[arg(long = "show-suppressed")]
+        show_suppressed: bool,
+        #[arg(long = "allow-empty")]
+        allow_empty: bool,
+        #[arg(long)]
+        stats: bool,
+    },
+    Plan {
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long = "no-global")]
+        no_global: bool,
+        #[arg(long, value_enum, default_value_t = Optimizer::Auto)]
+        optimizer: Optimizer,
+    },
+    List {
+        #[arg(long = "no-global")]
+        no_global: bool,
+    },
+    Show {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    Validate {
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+        #[arg(long, value_name = "PATH", conflicts_with = "id")]
+        file: Option<PathBuf>,
+        #[arg(long = "no-global")]
+        no_global: bool,
+    },
+    Test {
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+        #[arg(long = "no-global")]
+        no_global: bool,
+    },
+    Update {
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(long, required = true)]
+        stdin: bool,
+        #[arg(long = "expect-hash", value_name = "HASH", required = true)]
+        expect_hash: String,
+        #[arg(long = "allow-test-removal")]
+        allow_test_removal: bool,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    SetMode {
+        #[arg(value_name = "ID")]
+        id: String,
+        #[arg(value_enum, value_name = "MODE")]
+        mode: Mode,
+        #[arg(long, required = true)]
+        reason: String,
+        #[arg(long = "no-global")]
+        no_global: bool,
+    },
+    Explain {
+        #[arg(value_name = "PATH")]
+        path: String,
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long = "no-global")]
+        no_global: bool,
+        #[arg(long = "include-ignored")]
+        include_ignored: bool,
+        #[arg(long = "no-host-ignores")]
+        no_host_ignores: bool,
+    },
+    Config {
+        #[arg(long = "no-global")]
+        no_global: bool,
+    },
+    Schema {
+        #[arg(value_enum, value_name = "NAME")]
+        name: SchemaName,
+    },
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum CacheCommand {
+    Clear,
+}
+
+pub fn run<I, T>(args: I) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    match Cli::try_parse_from(&args) {
+        Ok(cli) => execute(cli),
+        Err(error) => {
+            if json_hint(&args)
+                && !matches!(
+                    error.kind(),
+                    ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+                )
+            {
+                let command = command_name(&args);
+                print_json(&command_error(&command, error.to_string()));
+                2
+            } else {
+                let code = if matches!(
+                    error.kind(),
+                    ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+                ) {
+                    0
+                } else {
+                    2
+                };
+                eprint!("{error}");
+                code
+            }
+        }
+    }
+}
+
+fn execute(cli: Cli) -> i32 {
+    let command = command_string(&cli.command);
+    if let Command::Schema { name } = &cli.command {
+        return print_bundled_schema(name);
+    }
+    let options = match options(&cli) {
+        Ok(options) => options,
+        Err(error) => {
+            return finish(&cli.common.format, &cli.common.color, &command, Err(error));
+        }
+    };
+    let result = std::env::current_exe()
+        .map_err(anyhow::Error::from)
+        .and_then(|exe| wt_core::dispatch_with_worker(&command, &options, &exe));
+    finish(&cli.common.format, &cli.common.color, &command, result)
+}
+
+fn print_bundled_schema(name: &SchemaName) -> i32 {
+    let schema = match name {
+        SchemaName::Rule => include_str!("../../../schemas/rule.schema.json"),
+        SchemaName::Submission => include_str!("../../../schemas/submission.schema.json"),
+        SchemaName::Tests => include_str!("../../../schemas/tests.schema.json"),
+        SchemaName::Config => include_str!("../../../schemas/config.schema.json"),
+        SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
+        SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
+        SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
+    };
+    print!("{schema}");
+    if !schema.ends_with('\n') {
+        println!();
+    }
+    0
+}
+
+fn options(cli: &Cli) -> anyhow::Result<Value> {
+    let mut object = common_options(&cli.common);
+    match &cli.command {
+        Command::Init { global } => {
+            object.insert("global".to_owned(), json!(global));
+        }
+        Command::New {
+            json: positional,
+            stdin,
+            file,
+            global,
+        } => {
+            object.insert("global".to_owned(), json!(global));
+            object.insert(
+                "submission".to_owned(),
+                read_submission(positional.as_deref(), *stdin, file.as_ref())?,
+            );
+        }
+        Command::Check {
+            paths,
+            include_ignored,
+            no_host_ignores,
+            no_global,
+            rules,
+            strict,
+            no_cache,
+            optimizer,
+            changed,
+            base,
+            jobs,
+            max_file_bytes,
+            show_suppressed,
+            allow_empty,
+            stats,
+        } => {
+            insert_if_true(&mut object, "include_ignored", *include_ignored);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "strict", *strict);
+            insert_if_true(&mut object, "no_cache", *no_cache);
+            if !matches!(optimizer, Optimizer::Auto) {
+                object.insert("optimizer".to_owned(), json!("off"));
+            }
+            insert_if_true(&mut object, "changed", *changed);
+            if let Some(base) = base {
+                object.insert("base".to_owned(), json!(base));
+            }
+            if let Some(jobs) = jobs {
+                object.insert("jobs".to_owned(), json!(jobs));
+            }
+            if let Some(max_file_bytes) = max_file_bytes {
+                object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
+            }
+            insert_if_true(&mut object, "show_suppressed", *show_suppressed);
+            insert_if_true(&mut object, "allow_empty", *allow_empty);
+            insert_if_true(&mut object, "stats", *stats);
+            if !paths.is_empty() {
+                object.insert("paths".to_owned(), json!(paths));
+            }
+        }
+        Command::Plan {
+            rules,
+            no_global,
+            optimizer,
+        } => {
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "no_global", *no_global);
+            if !matches!(optimizer, Optimizer::Auto) {
+                object.insert("optimizer".to_owned(), json!("off"));
+            }
+        }
+        Command::List { no_global } | Command::Config { no_global } => {
+            insert_if_true(&mut object, "no_global", *no_global);
+        }
+        Command::Show { id } => {
+            object.insert("id".to_owned(), json!(id));
+        }
+        Command::Validate {
+            id,
+            file,
+            no_global,
+        } => {
+            insert_if_true(&mut object, "no_global", *no_global);
+            if let Some(file) = file {
+                object.insert("submission".to_owned(), read_json_file(file)?);
+            } else if let Some(id) = id {
+                object.insert("id".to_owned(), json!(id));
+            }
+        }
+        Command::Test { id, no_global } => {
+            insert_if_true(&mut object, "no_global", *no_global);
+            if let Some(id) = id {
+                object.insert("id".to_owned(), json!(id));
+            }
+        }
+        Command::Update {
+            id,
+            stdin: _,
+            expect_hash,
+            allow_test_removal,
+            reason,
+        } => {
+            object.insert("id".to_owned(), json!(id));
+            object.insert("expect_hash".to_owned(), json!(expect_hash));
+            object.insert("submission".to_owned(), read_submission(None, true, None)?);
+            insert_if_true(&mut object, "allow_test_removal", *allow_test_removal);
+            if let Some(reason) = reason {
+                object.insert("reason".to_owned(), json!(reason));
+            }
+        }
+        Command::SetMode {
+            id,
+            mode,
+            reason,
+            no_global,
+        } => {
+            object.insert("id".to_owned(), json!(id));
+            object.insert("mode".to_owned(), json!(mode_string(mode)));
+            object.insert("reason".to_owned(), json!(reason));
+            insert_if_true(&mut object, "no_global", *no_global);
+        }
+        Command::Explain {
+            path,
+            rules,
+            no_global,
+            include_ignored,
+            no_host_ignores,
+        } => {
+            object.insert("paths".to_owned(), json!([path]));
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_true(&mut object, "include_ignored", *include_ignored);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+        }
+        Command::Schema { name } => {
+            object.insert("schema".to_owned(), json!(schema_string(name)));
+        }
+        Command::Cache { command } => match command {
+            CacheCommand::Clear => {}
+        },
+    }
+    Ok(Value::Object(object))
+}
+
+fn common_options(common: &Common) -> Map<String, Value> {
+    let mut object = Map::new();
+    if let Some(root) = &common.root {
+        object.insert("root".to_owned(), json!(root));
+    }
+    if let Some(global_dir) = &common.global_dir {
+        object.insert("global_dir".to_owned(), json!(global_dir));
+    }
+    object.insert("format".to_owned(), json!(format_string(&common.format)));
+    object.insert("color".to_owned(), json!(color_string(&common.color)));
+    object
+}
+
+fn read_submission(
+    positional: Option<&str>,
+    stdin: bool,
+    file: Option<&PathBuf>,
+) -> anyhow::Result<Value> {
+    match (positional, stdin, file) {
+        (Some(value), false, None) => parse_bounded(value.as_bytes()),
+        (None, true, None) => {
+            let mut input = io::stdin().lock();
+            parse_reader(&mut input)
+        }
+        (None, false, Some(path)) => {
+            let mut input = File::open(path)?;
+            parse_reader(&mut input)
+        }
+        _ => Err(anyhow::anyhow!(
+            "exactly one submission source is required: JSON, --stdin, or --file PATH"
+        )),
+    }
+}
+
+fn read_json_file(path: &PathBuf) -> anyhow::Result<Value> {
+    let mut input = File::open(path)?;
+    parse_reader(&mut input)
+}
+
+fn parse_reader(reader: &mut dyn Read) -> anyhow::Result<Value> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_JSON_INPUT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_JSON_INPUT_BYTES {
+        return Err(anyhow::anyhow!(
+            "JSON input exceeds the 8 MiB CLI input limit"
+        ));
+    }
+    parse_bounded(&bytes)
+}
+
+fn parse_bounded(bytes: &[u8]) -> anyhow::Result<Value> {
+    if bytes.len() > MAX_JSON_INPUT_BYTES {
+        return Err(anyhow::anyhow!(
+            "JSON input exceeds the 8 MiB CLI input limit"
+        ));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| anyhow::anyhow!("JSON input is not UTF-8: {error}"))?;
+    wt_core::parse_json(text).map_err(|error| anyhow::anyhow!("invalid strict JSON: {error}"))
+}
+
+fn finish(
+    format: &OutputFormat,
+    color: &ColorMode,
+    command: &str,
+    result: anyhow::Result<Value>,
+) -> i32 {
+    let value = match result {
+        Ok(value) => value,
+        Err(error) => command_error(command, error.to_string()),
+    };
+    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(2) as i32;
+    match format {
+        OutputFormat::Json => print_json(&value),
+        OutputFormat::Text => print_text(&value, color),
+    }
+    exit_code
+}
+
+fn command_error(command: &str, error: String) -> Value {
+    json!({
+        "schema_version": 2,
+        "command": command,
+        "status": "error",
+        "exit_code": 2,
+        "error": error
+    })
+}
+
+fn print_json(value: &Value) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => println!("{text}"),
+        Err(error) => {
+            eprintln!("unable to serialize JSON output: {error}");
+        }
+    }
+}
+
+fn print_text(value: &Value, color: &ColorMode) {
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        println!("error: {error}");
+        return;
+    }
+    if value.get("command").and_then(Value::as_str) == Some("check") {
+        if let Some(diagnostics) = value.get("diagnostics").and_then(Value::as_array) {
+            for diagnostic in diagnostics {
+                let label = if diagnostic["blocking"] == true {
+                    "BLOCKING"
+                } else {
+                    "ADVISORY"
+                };
+                let label = style_label(label, color);
+                println!(
+                    "{}:{}:{} {} {} {}",
+                    diagnostic["path"].as_str().unwrap_or("<unknown>"),
+                    diagnostic["start_line"].as_u64().unwrap_or(0),
+                    diagnostic["start_column"].as_u64().unwrap_or(0),
+                    label,
+                    diagnostic["severity"].as_str().unwrap_or("unknown"),
+                    diagnostic["rule_id"].as_str().unwrap_or("<unknown>")
+                );
+                if let Some(message) = diagnostic["message"].as_str() {
+                    println!("  {message}");
+                }
+                if let Some(help) = diagnostic["help"].as_str() {
+                    println!("  help: {help}");
+                }
+            }
+        }
+        if let Some(errors) = value.get("errors").and_then(Value::as_array) {
+            for error in errors {
+                println!("analysis error: {}", error);
+            }
+        }
+        let summary = &value["summary"];
+        println!(
+            "{} blocking diagnostic(s); {} advisory diagnostic(s); {} file(s) checked; {}.",
+            summary["blocking_diagnostics"].as_u64().unwrap_or(0),
+            summary["advisory_diagnostics"].as_u64().unwrap_or(0),
+            summary["checked_files"].as_u64().unwrap_or(0),
+            if value["complete"] == true {
+                "analysis complete"
+            } else {
+                "analysis incomplete"
+            }
+        );
+        return;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(value) {
+        println!("{text}");
+    }
+}
+
+fn style_label(label: &str, color: &ColorMode) -> String {
+    let enabled = match color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    };
+    if !enabled {
+        return label.to_owned();
+    }
+    let code = if label == "BLOCKING" { "31" } else { "33" };
+    format!("\u{1b}[{code}m{label}\u{1b}[0m")
+}
+
+fn insert_if_true(object: &mut Map<String, Value>, key: &str, value: bool) {
+    if value {
+        object.insert(key.to_owned(), json!(true));
+    }
+}
+
+fn insert_if_nonempty(object: &mut Map<String, Value>, key: &str, values: &[String]) {
+    if !values.is_empty() {
+        object.insert(key.to_owned(), json!(values));
+    }
+}
+
+fn command_string(command: &Command) -> String {
+    match command {
+        Command::Init { .. } => "init",
+        Command::New { .. } => "new",
+        Command::Check { .. } => "check",
+        Command::Plan { .. } => "plan",
+        Command::List { .. } => "list",
+        Command::Show { .. } => "show",
+        Command::Validate { .. } => "validate",
+        Command::Test { .. } => "test",
+        Command::Update { .. } => "update",
+        Command::SetMode { .. } => "set-mode",
+        Command::Explain { .. } => "explain",
+        Command::Config { .. } => "config",
+        Command::Schema { .. } => "schema",
+        Command::Cache { .. } => "cache-clear",
+    }
+    .to_owned()
+}
+
+fn command_name(args: &[OsString]) -> String {
+    args.iter()
+        .skip(1)
+        .filter_map(|arg| arg.to_str())
+        .find(|arg| {
+            matches!(
+                *arg,
+                "init"
+                    | "new"
+                    | "check"
+                    | "plan"
+                    | "list"
+                    | "show"
+                    | "validate"
+                    | "test"
+                    | "update"
+                    | "set-mode"
+                    | "explain"
+                    | "config"
+                    | "schema"
+                    | "cache"
+            )
+        })
+        .unwrap_or("command")
+        .to_owned()
+}
+
+fn json_hint(args: &[OsString]) -> bool {
+    args.iter().enumerate().any(|(index, arg)| {
+        arg == "--format=json"
+            || (arg == "--format"
+                && args.get(index + 1).and_then(|value| value.to_str()) == Some("json"))
+    })
+}
+
+fn format_string(value: &OutputFormat) -> &'static str {
+    match value {
+        OutputFormat::Text => "text",
+        OutputFormat::Json => "json",
+    }
+}
+
+fn color_string(value: &ColorMode) -> &'static str {
+    match value {
+        ColorMode::Auto => "auto",
+        ColorMode::Always => "always",
+        ColorMode::Never => "never",
+    }
+}
+
+fn mode_string(value: &Mode) -> &'static str {
+    match value {
+        Mode::Advisory => "advisory",
+        Mode::Enforced => "enforced",
+        Mode::Disabled => "disabled",
+    }
+}
+
+fn schema_string(value: &SchemaName) -> &'static str {
+    match value {
+        SchemaName::Rule => "rule",
+        SchemaName::Submission => "submission",
+        SchemaName::Tests => "tests",
+        SchemaName::Config => "config",
+        SchemaName::Result => "result",
+        SchemaName::Plan => "plan",
+        SchemaName::Waivers => "waivers",
+    }
+}
+
+pub fn print_help() {
+    let _ = Cli::command().print_help();
+}

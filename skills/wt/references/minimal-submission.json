@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "id": "no-todo-marker",
+  "title": "No TODO marker in text files",
+  "description": "Reports TODO markers in text files.",
+  "rationale": "A retained marker usually means unfinished work and should be reviewed before submission.",
+  "mode": "enforced",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["**/*.txt"]},
+  "diagnostics": {
+    "todo-marker": {
+      "kind": "violation",
+      "message": "This text file contains a TODO marker.",
+      "help": "Resolve the TODO or document why it is intentionally retained."
+    }
+  },
+  "limitations": ["Only checks eligible UTF-8 text files whose paths match the scope.", "Does not infer whether a TODO is intentional."],
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": ["text.v1"],
+    "source": "if file.text.contains(\"TODO\") { emit(file.span, \"todo-marker\"); }"
+  },
+  "tests": {
+    "schema_version": 2,
+    "cases": [
+      {
+        "name": "reports-marker",
+        "files": [{"path": "notes.txt", "content": "TODO: finish this note\n"}],
+        "expect": [{"path": "notes.txt", "code": "todo-marker", "kind": "violation"}]
+      },
+      {
+        "name": "accepts-complete-note",
+        "files": [{"path": "notes.txt", "content": "This note is complete.\n"}],
+        "expect": []
+      }
+    ]
+  }
+}

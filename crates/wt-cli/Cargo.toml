@@ -1,0 +1,24 @@
+[package]
+name = "wt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "wt"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde_json.workspace = true
+wt-core = { path = "../wt-core" }
+
+[dev-dependencies]
+jsonschema = { version = "0.57", default-features = false }
+tempfile.workspace = true
+
+[[bin]]
+name = "wt"
+path = "src/main.rs"
+
+[[bin]]
+name = "watchtower"
+path = "src/bin/watchtower.rs"

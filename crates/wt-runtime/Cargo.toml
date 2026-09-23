@@ -1,0 +1,19 @@
+[package]
+name = "wt-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+globset.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+rhai = { version = "=1.26.1", features = ["internals", "sync"] }
+tree-sitter = "=0.24.7"
+tree-sitter-typescript = "=0.23.2"
+
+[dev-dependencies]
+serde_json.workspace = true

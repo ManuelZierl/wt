@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchtower.local/schemas/submission.schema.json",
+  "title": "Watchtower rule submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "title", "description", "rationale", "severity", "scope", "diagnostics", "limitations", "code"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*$"},
+    "title": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "rationale": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["advisory", "enforced", "disabled"], "default": "advisory"},
+    "severity": {"enum": ["error", "warning", "info"]},
+    "execution": {"enum": ["file", "repository"], "default": "file"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "patterns": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"oneOf": [{"type": "string", "maxLength": 8192}, {"$ref": "#/$defs/pattern"}]}
+    },
+    "diagnostics": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[A-Za-z0-9_-]+$"},
+      "additionalProperties": {"$ref": "#/$defs/diagnostic"}
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "code": {"$ref": "#/$defs/submission-code"},
+    "tests": {"$ref": "#/$defs/tests"},
+    "metadata": {}
+  },
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["include"],
+      "properties": {
+        "include": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/glob"}},
+        "exclude": {"type": "array", "items": {"$ref": "#/$defs/exclusion"}},
+        "require_files": {"type": "array", "items": {"$ref": "#/$defs/relative-path"}}
+      }
+    },
+    "glob": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\).+$"},
+    "relative-path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["glob", "reason"],
+      "properties": {
+        "glob": {"$ref": "#/$defs/glob"},
+        "reason": {"type": "string", "pattern": ".*\\S.*"}
+      }
+    },
+    "pattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["regex"],
+      "properties": {
+        "regex": {"type": "string", "maxLength": 8192},
+        "flags": {"$ref": "#/$defs/pattern-flags"}
+      }
+    },
+    "pattern-flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "case_insensitive": {"type": "boolean"},
+        "multi_line": {"type": "boolean"},
+        "dot_matches_new_line": {"type": "boolean"},
+        "ignore_whitespace": {"type": "boolean"},
+        "crlf": {"type": "boolean"}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "message", "help"],
+      "properties": {
+        "kind": {"enum": ["violation", "review"]},
+        "message": {"type": "string", "pattern": ".*\\S.*"},
+        "help": {"type": "string", "pattern": ".*\\S.*"}
+      }
+    },
+    "submission-code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "capabilities", "source"],
+      "properties": {
+        "language": {"const": "wt-rule-1"},
+        "capabilities": {"type": "array", "items": {"enum": ["text.v1", "regex.v1", "path.v1", "jsx.v1", "repo.v1"]}},
+        "source": {"type": "string", "maxLength": 131072}
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "cases"],
+      "properties": {
+        "schema_version": {"const": 2},
+        "cases": {"type": "array", "items": {"$ref": "#/$defs/test-case"}}
+      }
+    },
+    "test-case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "files"],
+      "properties": {
+        "name": {"type": "string", "pattern": ".*\\S.*"},
+        "files": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/test-file"}},
+        "expect": {"type": "array", "items": {"$ref": "#/$defs/expected"}}
+      }
+    },
+    "test-file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {"$ref": "#/$defs/relative-path"},
+        "content": {"type": "string"},
+        "fixture": {"$ref": "#/$defs/relative-path"}
+      },
+      "oneOf": [
+        {"required": ["content"], "not": {"required": ["fixture"]}},
+        {"required": ["fixture"], "not": {"required": ["content"]}}
+      ]
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "code", "kind"],
+      "properties": {
+        "path": {"$ref": "#/$defs/relative-path"},
+        "code": {"type": "string", "pattern": ".*\\S.*"},
+        "kind": {"enum": ["violation", "review"]},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 0}
+      },
+      "oneOf": [
+        {"not": {"anyOf": [{"required": ["start_byte"]}, {"required": ["end_byte"]}]}},
+        {"required": ["start_byte", "end_byte"]}
+      ]
+    }
+  }
+}

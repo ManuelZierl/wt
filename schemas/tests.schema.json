@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchtower.local/schemas/tests.schema.json",
+  "title": "Watchtower fixture suite",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "cases"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "files"],
+      "properties": {
+        "name": {"type": "string", "pattern": ".*\\S.*"},
+        "files": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/file"}},
+        "expect": {"type": "array", "items": {"$ref": "#/$defs/expected"}}
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+        "content": {"type": "string"},
+        "fixture": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"}
+      },
+      "oneOf": [
+        {"required": ["content"], "not": {"required": ["fixture"]}},
+        {"required": ["fixture"], "not": {"required": ["content"]}}
+      ]
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "code", "kind"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"},
+        "code": {"type": "string", "pattern": ".*\\S.*"},
+        "kind": {"enum": ["violation", "review"]},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 0}
+      },
+      "oneOf": [
+        {"not": {"anyOf": [{"required": ["start_byte"]}, {"required": ["end_byte"]}]}},
+        {"required": ["start_byte", "end_byte"]}
+      ]
+    }
+  }
+}

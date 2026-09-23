@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchtower.local/schemas/plan.schema.json",
+  "title": "Watchtower static plan result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command", "status", "exit_code", "rules", "queries", "plan_digest", "optimizer", "executed"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "command": {"const": "plan"},
+    "status": {"const": "pass"},
+    "exit_code": {"const": 0},
+    "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+    "queries": {"type": "array", "items": {"$ref": "#/$defs/shared-query"}},
+    "plan_digest": {"$ref": "#/$defs/digest"},
+    "optimizer": {"enum": ["auto", "off"]},
+    "executed": {"const": false}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullable-string": {"type": ["string", "null"]},
+    "source-location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line", "column"],
+      "properties": {
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "column": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "pattern-flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_insensitive", "multi_line", "dot_matches_new_line", "ignore_whitespace", "crlf", "engine"],
+      "properties": {
+        "case_insensitive": {"type": "boolean"},
+        "multi_line": {"type": "boolean"},
+        "dot_matches_new_line": {"type": "boolean"},
+        "ignore_whitespace": {"type": "boolean"},
+        "crlf": {"type": "boolean"},
+        "engine": {"type": "string"}
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source"],
+      "properties": {"kind": {"type": "string"}, "source": {"$ref": "#/$defs/source-location"}}
+    },
+    "ir-query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["call_site", "source", "guards", "namespace", "operation", "result_shape", "input_symbolic_expression", "pattern_alias", "pattern_expression", "pattern_flags", "canonical_identity", "resolved_string_constants"],
+      "properties": {
+        "call_site": {"type": "integer", "minimum": 0},
+        "source": {"$ref": "#/$defs/source-location"},
+        "guards": {"type": "array", "items": {"$ref": "#/$defs/guard"}},
+        "namespace": {"type": "string"},
+        "operation": {"type": "string"},
+        "result_shape": {"type": "string"},
+        "input_symbolic_expression": {"type": "string"},
+        "pattern_alias": {"$ref": "#/$defs/nullable-string"},
+        "pattern_expression": {"$ref": "#/$defs/nullable-string"},
+        "pattern_flags": {"anyOf": [{"$ref": "#/$defs/pattern-flags"}, {"type": "null"}]},
+        "canonical_identity": {"type": "string"},
+        "resolved_string_constants": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "ir": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution", "queries"],
+      "properties": {"execution": {"enum": ["file", "repository"]}, "queries": {"type": "array", "items": {"$ref": "#/$defs/ir-query"}}}
+    },
+    "rule-plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["language", "execution", "patterns", "calls", "ir", "frontend", "residual_executor", "sharing"],
+      "properties": {
+        "language": {"const": "wt-rule-1"},
+        "execution": {"enum": ["file", "repository"]},
+        "patterns": {"type": "object", "additionalProperties": {"type": "object"}},
+        "calls": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name", "namespace"], "properties": {"name": {"type": "string"}, "namespace": {"type": "string"}}}},
+        "ir": {"$ref": "#/$defs/ir"},
+        "frontend": {"type": "string"},
+        "residual_executor": {"type": "string"},
+        "sharing": {"type": "string"}
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "digest", "scope", "plan"],
+      "properties": {"id": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "scope": {"type": "object"}, "plan": {"$ref": "#/$defs/rule-plan"}}
+    },
+    "consumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule_id", "call_site", "alias", "source", "guards"],
+      "properties": {
+        "rule_id": {"type": "string"},
+        "call_site": {"type": "integer", "minimum": 0},
+        "alias": {"$ref": "#/$defs/nullable-string"},
+        "source": {"$ref": "#/$defs/source-location"},
+        "guards": {"type": "array", "items": {"$ref": "#/$defs/guard"}}
+      }
+    },
+    "shared-query": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "result_shape", "input", "pattern", "flags", "consumers", "decision", "reason", "id", "sharing_candidate"],
+      "properties": {
+        "operation": {"type": "string"},
+        "result_shape": {"type": "string"},
+        "input": {"type": "string"},
+        "pattern": {"$ref": "#/$defs/nullable-string"},
+        "flags": {"anyOf": [{"$ref": "#/$defs/pattern-flags"}, {"type": "null"}]},
+        "consumers": {"type": "array", "items": {"$ref": "#/$defs/consumer"}},
+        "decision": {"type": "string"},
+        "reason": {"type": "string"},
+        "id": {"type": "string"},
+        "sharing_candidate": {"type": "boolean"}
+      }
+    }
+  }
+}

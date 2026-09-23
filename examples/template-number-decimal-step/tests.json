@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "cases": [
+    {"name": "missing-step", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/missing-step.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "fixed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/fixed-conditional.tsx"}], "expect": []},
+    {"name": "step-any-quoted", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/step-any-quoted.tsx"}], "expect": []},
+    {"name": "step-any-expression", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/step-any-expression.tsx"}], "expect": []},
+    {"name": "step-one-quoted", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/step-one-quoted.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "step-one-expression", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/step-one-expression.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "reversed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/reversed-conditional.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
+    {"name": "helper-derived-step", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/helper-derived-step.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
+    {"name": "spread-attributes", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/spread-attributes.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
+    {"name": "duplicate-relevant-attribute", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/duplicate-relevant-attribute.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
+    {"name": "renamed-parameter", "files": [{"path": "frontend/src/template-pages.tsx", "fixture": "fixtures/renamed-parameter.tsx"}], "expect": [{"path": "frontend/src/template-pages.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "formatting-and-attribute-order", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/formatting-and-attribute-order.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "single-quote-attribute-style", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/single-quote-attribute-style.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "arrow-before-type", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/arrow-before-type.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
+    {"name": "jsx-looking-text-in-string-and-comment", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/jsx-looking-text-in-string-and-comment.tsx"}], "expect": []},
+    {"name": "unrelated-retry-count-input", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/unrelated-retry-count-input.tsx"}], "expect": []}
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "id": "shared-request-foo123",
+  "title": "Request calls containing foo123",
+  "description": "Reports request call regions that contain the more specific foo123 marker.",
+  "rationale": "This example remains independent from the broader foo rule while sharing its native query.",
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["**/*.txt"]},
+  "patterns": {"call_region": "request\\([^\\r\\n]*\\)"},
+  "diagnostics": {
+    "contains-foo123": {
+      "kind": "violation",
+      "message": "The request region contains foo123.",
+      "help": "Review the request marker and use the documented form."
+    }
+  },
+  "limitations": ["This example only inspects text files and does not interpret request arguments."],
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": ["regex.v1", "text.v1"],
+    "source": "for matched in rx::find_all(file, \"call_region\") { if matched.text.contains(\"foo123\") { emit(matched.span, \"contains-foo123\"); } }"
+  },
+  "tests": {
+    "schema_version": 2,
+    "cases": [
+      {
+        "name": "reports-specific-marker",
+        "files": [{"path": "sample.txt", "content": "request(\"foo123\")"}],
+        "expect": [{"path": "sample.txt", "code": "contains-foo123", "kind": "violation"}]
+      },
+      {
+        "name": "accepts-broader-only-marker",
+        "files": [{"path": "sample.txt", "content": "request(\"foo\")"}],
+        "expect": []
+      }
+    ]
+  }
+}

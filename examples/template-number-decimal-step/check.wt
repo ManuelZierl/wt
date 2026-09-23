@@ -1,0 +1,42 @@
+for input in jsx::inputs(file) {
+    let type_attr = input.attr("type");
+    if type_attr == () || type_attr.kind != "expression" {
+        continue;
+    }
+
+    let matched = rx::capture_text(
+        "template_number_type",
+        type_attr.canonical
+    );
+    if matched == () {
+        continue;
+    }
+
+    if input.has_spread || input.duplicate("type") || input.duplicate("step") {
+        emit(input.span, "unverified-step");
+        continue;
+    }
+
+    let parameter = matched.group_text("parameter");
+    let step = input.attr("step");
+    if step == () {
+        emit(input.span, "decimal-step");
+        continue;
+    }
+
+    if step.static_string == "any" {
+        continue;
+    }
+
+    let expected = parameter
+        + " . type === \"number\" ? \"any\" : undefined";
+    if step.kind == "expression" && step.canonical == expected {
+        continue;
+    }
+
+    if step.static_string == "1" || step.canonical == "1" {
+        emit(input.span, "decimal-step");
+    } else {
+        emit(input.span, "unverified-step");
+    }
+}
