@@ -1,0 +1,41 @@
+name: WT performance verification (temporary)
+on:
+  push:
+    branches: [perf/shared-query-snapshots]
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: perf/shared-query-snapshots
+          fetch-depth: 0
+      - name: Toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+      - name: Baseline runtime measurements
+        env:
+          WT_BENCH_REPORT: /tmp/wt-baseline.json
+        run: cargo test -p wt-runtime --release --locked --test shared_query_performance -- --ignored --nocapture
+      - name: Apply performance changes
+        run: python3 .wt-perf-bootstrap/apply.py
+      - name: Format and workspace tests
+        run: |
+          cargo fmt --all
+          cargo test --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Patched runtime measurements
+        env:
+          WT_BENCH_REPORT: /tmp/wt-patched.json
+        run: cargo test -p wt-runtime --release --locked --test shared_query_performance -- --ignored --nocapture
+      - name: Record results and publish verified branch
+        run: |
+          python3 .wt-perf-bootstrap/report.py
+          git diff --check
+          git rm -r .wt-perf-bootstrap .github/workflows/wt-perf-bootstrap.yml
+          git add crates schemas docs/shared-query-performance.md
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'perf: share immutable source text and cached match payloads'
+          git push origin HEAD:perf/shared-query-snapshots
