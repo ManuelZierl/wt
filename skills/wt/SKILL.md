@@ -40,7 +40,7 @@ Prefer a small, documented `text.v1` WRL1 detector. `check.wt` is a top-level st
 
 `text.v1` supplies the text, regex, path, and repository APIs. Use spans from the original source (`matched.span`, `line.span`, or `file.span`). Request `jsx.v1` only when actual TSX parsing is needed. Never use I/O, environment, network, process, clock, random, dynamic evaluation, imports, or unregistered calls.
 
-A submission needs `schema_version: 2`, a stable ID, explanation and rationale, severity, a nonempty scope, diagnostic definitions, limitations, and:
+A new submission uses `schema_version: 3`, a stable ID, title, severity, a nonempty scope, diagnostics, `documentation.source` containing the Markdown contract/rationale/limitations/evidence, and:
 
 ```json
 "code": {
@@ -84,7 +84,7 @@ Use `--optimizer off --no-cache` for the unshared correctness reference path whe
 
 ## Update Safely
 
-Use the JSON `show` response's `rule` field as the self-contained submission, retaining all existing tests and fixture content. Do not submit the surrounding command envelope. Edit the submission, obtain the current package digest from `list`, and update atomically:
+Use the JSON `show` response's `rule` field as the self-contained submission, retaining all existing tests and fixture content. Do not submit the surrounding command envelope. Edit the submission and use the `digest` returned by that same `show` response to update atomically:
 
 ```sh
 wt list --format json
@@ -107,4 +107,29 @@ The final CI policy and invocation must be outside the editing agent's control. 
 wt check --no-global --no-host-ignores --no-cache --format json
 ```
 
-Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, remove examples, or add a waiver merely to make a check pass. A legitimate exception belongs in the detector and fixtures; an intentionally accepted violation needs a specific, reasoned waiver.
+Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, remove examples, or add a waiver merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization or a legacy waiver.
+
+## Readable Rules And Occurrence Decisions
+
+`new` and `update` automatically format `check.wt` and store long-form prose only
+in `rule.md`. Legacy schema-2 rules remain readable and migrate on explicit update.
+Use `wt fmt --check` for existing local scripts. `wt check` never reformats source.
+
+A `review` finding means **inspect this pattern**, not **this is a proven bug**.
+An acceptable occurrence is still a raw positive. Keep that detector fixture.
+After actual contextual review, record one decision with `wt review FINDING_ID
+--decision acceptable --expect-evidence HASH --reason-file rationale.md` using the
+IDs from the reviewed check. The command rejects stale evidence. Never bulk-accept
+findings merely to pass a check. `confirmed-issue` stays actionable; `accepted-risk`
+is a different, explicitly authorized decision, not a synonym for acceptable code.
+
+`wt reviews --format json` exposes the current stored record hash and rationale.
+A replacement requires `--expect-hash` and appends history. Changed owning files,
+repository-rule input sets, rule contracts, runtime semantics and explicitly
+watched files reopen the decision. Copies do not inherit acceptance. Missing
+matches are not automatically fixed. Inspect `reviewed`, `review_records`, all
+analysis errors and coverage alongside actionable `diagnostics`.
+
+See `docs/readable-rules-and-reviews.md` in a WT checkout and `wt review --help` /
+`wt schema review` in an installed build. Rule schema 3, review schema 1 and command
+envelope schema 2 are independent; inspect the installed executable before use.

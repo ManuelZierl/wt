@@ -8,6 +8,9 @@ mod digest;
 #[path = "../src/fixtures.rs"]
 mod fixtures;
 #[allow(dead_code)]
+#[path = "../src/formatting.rs"]
+mod formatting;
+#[allow(dead_code)]
 #[path = "../src/rule.rs"]
 mod rule;
 
@@ -36,6 +39,7 @@ fn package(directory: &Path, include: &str) -> RulePackage {
         },
     );
     let manifest = Manifest {
+        documentation: None,
         schema_version: 2,
         id: "cache-rule".to_owned(),
         title: "cache".to_owned(),

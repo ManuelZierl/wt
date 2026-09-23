@@ -82,14 +82,28 @@ pub struct Code {
     pub source: Option<String>,
 }
 
+/// Long-form rule prose has exactly one authoritative representation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Documentation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema_version: u64,
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<Documentation>,
     #[serde(default = "default_mode")]
     pub mode: String,
     pub severity: String,
@@ -99,6 +113,7 @@ pub struct Manifest {
     #[serde(default)]
     pub patterns: BTreeMap<String, Pattern>,
     pub diagnostics: BTreeMap<String, DiagnosticDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limitations: Vec<String>,
     pub code: Code,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,8 +128,12 @@ pub struct Submission {
     pub schema_version: u64,
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rationale: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<Documentation>,
     #[serde(default = "default_mode")]
     pub mode: String,
     pub severity: String,
@@ -124,6 +143,7 @@ pub struct Submission {
     #[serde(default)]
     pub patterns: BTreeMap<String, Pattern>,
     pub diagnostics: BTreeMap<String, DiagnosticDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub limitations: Vec<String>,
     pub code: Code,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,9 +195,15 @@ pub fn safe_relative(path: &str) -> bool {
 }
 
 pub fn validate_submission(submission: &Submission) -> Result<()> {
-    if submission.schema_version != 2 {
-        bail!("schema_version must be 2")
-    }
+    validate_documentation(
+        submission.schema_version,
+        &submission.title,
+        &submission.description,
+        &submission.rationale,
+        &submission.limitations,
+        submission.documentation.as_ref(),
+        true,
+    )?;
     validate_common(
         ValidationFields {
             id: &submission.id,
@@ -214,9 +240,15 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
 }
 
 pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
-    if manifest.schema_version != 2 {
-        bail!("schema_version must be 2")
-    }
+    validate_documentation(
+        manifest.schema_version,
+        &manifest.title,
+        &manifest.description,
+        &manifest.rationale,
+        &manifest.limitations,
+        manifest.documentation.as_ref(),
+        false,
+    )?;
     validate_common(
         ValidationFields {
             id: &manifest.id,
@@ -378,6 +410,7 @@ fn valid_glob(value: &str) -> bool {
 }
 
 pub fn submission_from_value(value: Value) -> Result<Submission> {
+    validate_prose_fields(&value)?;
     let submission: Submission =
         serde_json::from_value(value).context("invalid rule submission")?;
     validate_submission(&submission)?;
@@ -385,6 +418,7 @@ pub fn submission_from_value(value: Value) -> Result<Submission> {
 }
 
 pub fn manifest_from_value(value: Value) -> Result<Manifest> {
+    validate_prose_fields(&value)?;
     let manifest: Manifest = serde_json::from_value(value).context("invalid rule manifest")?;
     validate_manifest(&manifest)?;
     Ok(manifest)
@@ -471,6 +505,21 @@ pub fn load_package(directory: &Path, scope_name: &str) -> Result<RulePackage> {
         }
     }
     let mut references = vec!["check.wt".to_owned()];
+    if manifest.documentation.is_some() {
+        ensure_reference_inside(directory, "rule.md")?;
+        if fs::symlink_metadata(directory.join("rule.md"))?
+            .file_type()
+            .is_symlink()
+        {
+            bail!("rule.md must not be a symlink");
+        }
+        let bytes = read_package_file(directory, "rule.md", MAX_SOURCE_BYTES)?;
+        if std::str::from_utf8(&bytes)?.trim().is_empty() {
+            bail!("rule.md must contain nonempty UTF-8 documentation");
+        }
+        package_contents.insert("rule.md".to_owned(), bytes);
+        references.push("rule.md".to_owned());
+    }
     if let Some(path) = &manifest.tests_file {
         references.push(path.clone());
         if let Some(suite) = &tests {
@@ -517,6 +566,10 @@ pub fn submission_manifest(submission: &Submission) -> (Manifest, TestSuite) {
         title: submission.title.clone(),
         description: submission.description.clone(),
         rationale: submission.rationale.clone(),
+        documentation: submission.documentation.as_ref().map(|_| Documentation {
+            file: Some("rule.md".to_owned()),
+            source: None,
+        }),
         mode: submission.mode.clone(),
         severity: submission.severity.clone(),
         execution: submission.execution.clone(),
@@ -553,6 +606,18 @@ pub fn export_value(package: &RulePackage) -> Result<Value> {
         code_object.remove("file");
     }
     object.insert("code".to_owned(), code);
+    if package.manifest.documentation.is_some() {
+        let bytes = package
+            .fixture_contents
+            .get("rule.md")
+            .ok_or_else(|| anyhow!("rule.md was not loaded"))?;
+        object.insert(
+            "documentation".to_owned(),
+            serde_json::json!({
+                "source": std::str::from_utf8(bytes)?
+            }),
+        );
+    }
     if let Some(tests) = &package.tests {
         let mut tests_value = serde_json::to_value(tests)?;
         let cases = tests_value
@@ -593,4 +658,86 @@ pub fn export_value(package: &RulePackage) -> Result<Value> {
 
 pub fn map_with_code_source(submission: &Submission) -> Value {
     serde_json::to_value(submission).expect("submission serialization")
+}
+
+fn validate_prose_fields(value: &Value) -> Result<()> {
+    if value["schema_version"] == 3
+        && ["description", "rationale", "limitations"]
+            .iter()
+            .any(|key| value.get(key).is_some())
+    {
+        bail!("schema 3 stores prose only in documentation; remove legacy description/rationale/limitations");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_documentation(
+    version: u64,
+    title: &str,
+    description: &str,
+    rationale: &str,
+    limitations: &[String],
+    documentation: Option<&Documentation>,
+    submission: bool,
+) -> Result<()> {
+    if title.trim().is_empty() {
+        bail!("title must not be empty");
+    }
+    match (version, documentation) {
+        (2, None) if !description.trim().is_empty() && !rationale.trim().is_empty() => Ok(()),
+        (3, Some(doc))
+            if description.is_empty() && rationale.is_empty() && limitations.is_empty() =>
+        {
+            if submission {
+                if doc.file.is_some()
+                    || !doc
+                        .source
+                        .as_ref()
+                        .is_some_and(|s| !s.trim().is_empty() && s.len() <= MAX_SOURCE_BYTES)
+                {
+                    bail!("documentation requires nonempty source (at most 128 KiB), not file");
+                }
+            } else if doc.file.as_deref() != Some("rule.md") || doc.source.is_some() {
+                bail!("disk documentation must reference rule.md, without source");
+            }
+            Ok(())
+        }
+        _ => bail!("use legacy schema 2 prose, or schema 3 documentation without duplicate prose"),
+    }
+}
+
+/// Canonical storage is schema 3; legacy input remains importable without
+/// discarding its prose. Detector fixtures are retained verbatim.
+pub fn prepare_submission(mut submission: Submission) -> Result<Submission> {
+    validate_submission(&submission)?;
+    let manifest = map_with_code_source(&submission);
+    let source = submission.code.source.as_deref().unwrap_or_default();
+    wt_runtime::compile(&manifest, source)?;
+    let formatted = crate::formatting::format_source(source)?;
+    wt_runtime::compile(&manifest, &formatted)?;
+    submission.code.source = Some(formatted);
+    if submission.schema_version == 2 {
+        let mut markdown = format!(
+            "# {}\n\n## Description\n\n{}\n\n## Rationale\n\n{}\n\n## Limitations\n\n",
+            submission.title, submission.description, submission.rationale
+        );
+        if submission.limitations.is_empty() {
+            markdown.push_str("No limitations were recorded in the legacy package.\n");
+        } else {
+            for limitation in &submission.limitations {
+                markdown.push_str(&format!("- {limitation}\n"));
+            }
+        }
+        submission.documentation = Some(Documentation {
+            source: Some(markdown),
+            file: None,
+        });
+        submission.schema_version = 3;
+        submission.description.clear();
+        submission.rationale.clear();
+        submission.limitations.clear();
+    }
+    validate_submission(&submission)?;
+    Ok(submission)
 }

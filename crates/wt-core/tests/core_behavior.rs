@@ -198,6 +198,7 @@ fn update_requires_current_digest_and_preserves_old_package_on_stale_hash() {
     let global = tempdir().unwrap();
     let code = "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }";
     let created = new_rule(root.path(), global.path(), "update-me", code);
+    let stored = fs::read_to_string(root.path().join(".wt/rules/update-me/check.wt")).unwrap();
     let stale = dispatch(
         "update",
         &serde_json::json!({
@@ -214,7 +215,7 @@ fn update_requires_current_digest_and_preserves_old_package_on_stale_hash() {
     )
     .unwrap();
     assert_eq!(shown["exit_code"], 0);
-    assert_eq!(shown["rule"]["code"]["source"], code);
+    assert_eq!(shown["rule"]["code"]["source"], stored);
     assert!(created["digest"].as_str().is_some());
 }
 
