@@ -64,6 +64,19 @@ wt test local/template-number-decimal-step --root /tmp/wt-demo \
 
 The package retains the invalid-TSX analysis-error vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares consolidated `text.v1` and `jsx.v1`; the schemas continue to accept `regex.v1` for legacy packages.
 
+## Readable Rules And Reviewed Occurrences
+
+New and updated packages store formatted `check.wt` programs and authoritative
+Markdown explanations in `rule.md`, with execution metadata in `rule.json`.
+Legacy rule packages remain importable. Use `wt fmt --check` in CI and `wt fmt`
+for manually edited local rules; ordinary checks never rewrite them.
+
+A pattern can require review without being an error in every context. `wt review`
+records one explicit decision against the evidence actually reviewed. Current
+acceptances remain visible; changed context makes them actionable again. These
+records are repository knowledge, not a cache or a replacement for trusted review.
+See [the format, review lifecycle and migration guide](docs/readable-rules-and-reviews.md).
+
 ## Implementation Status
 
 The current workspace implements the CLI adapter, strict JSON submission sources, package creation/update, streamed scoped file selection, validation, fixture tests, text/JSON output, verbatim bundled schema lookup, persistent content-verified caches with fixture gates, worker-backed execution, shared native queries, and the core exit-code envelopes. The bundled examples and CLI tests exercise those paths.
@@ -90,6 +103,6 @@ The portable agent skill is [`skills/wt/SKILL.md`](skills/wt/SKILL.md), with a r
 
 Rule source is capped at 128 KiB, source files default to 4 MiB with a 64 MiB binary ceiling, regex expressions at 8 KiB, patterns per rule at 128, and regex results per call at 10,000. The CLI bounds one JSON submission/file input to 8 MiB before strict parsing. File invocations have a hard 2-second watchdog and repository invocations a 30-second watchdog. Jobs default to `min(available CPUs, 3)` and explicit values are bounded to `1..=3`; workers reserve 256 MiB each within a 1 GiB combined scheduling budget. Linux workers apply a 256 MiB address-space limit; macOS/Windows use scheduling and logical limits. These are safety ceilings, not throughput promises.
 
-`wt schema rule|submission|tests|config|result|plan|waivers` prints the corresponding checked-in schema bytes, not a core-generated approximation.
+`wt schema rule|submission|tests|config|result|plan|waivers|review` prints the corresponding checked-in schema bytes, not a core-generated approximation.
 
 See [`docs/cli.md`](docs/cli.md), [`docs/runtime-configuration.md`](docs/runtime-configuration.md), [`examples/`](examples/), [`spec.md`](spec.md), and [`schemas/`](schemas/) for contracts and current boundaries.

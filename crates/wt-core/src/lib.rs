@@ -9,6 +9,8 @@ mod config;
 mod digest;
 mod discovery;
 mod fixtures;
+mod formatting;
+mod reviews;
 mod rule;
 mod runner;
 mod selection;

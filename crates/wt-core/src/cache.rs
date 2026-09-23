@@ -364,6 +364,8 @@ fn execution_digest(package: &RulePackage) -> String {
         object.remove("severity");
         object.remove("title");
         object.remove("description");
+        object.remove("documentation");
+        object.remove("limitations");
         object.remove("rationale");
         object.remove("metadata");
         object.remove("tests_file");
@@ -437,7 +439,7 @@ fn clear_directory(path: &Path) -> Result<()> {
     fs::remove_dir_all(path).with_context(|| format!("unable to clear {}", path.display()))
 }
 
-fn compiled_semantic_identity() -> &'static str {
+pub(crate) fn compiled_semantic_identity() -> &'static str {
     static IDENTITY: OnceLock<String> = OnceLock::new();
     IDENTITY.get_or_init(|| digest_bytes(COMPILED_SEMANTIC_INPUT.as_bytes()))
 }

@@ -42,6 +42,15 @@ pub enum SchemaName {
     Result,
     Plan,
     Waivers,
+    Review,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum ReviewDecision {
+    NeedsReview,
+    Acceptable,
+    ConfirmedIssue,
+    AcceptedRisk,
 }
 
 #[derive(Clone, Debug, Parser)]
@@ -67,10 +76,51 @@ pub struct Common {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Format local rule programs without changing detector behavior.
+    Fmt {
+        #[arg(value_name = "ID")]
+        id: Option<String>,
+        /// Inspect without writing; exit 1 when formatting differs.
+        #[arg(long)]
+        check: bool,
+        /// Format user-global packages instead of local packages.
+        #[arg(long)]
+        global: bool,
+    },
+    /// Record one explicit, evidence-bound occurrence decision.
+    Review {
+        #[arg(value_name = "FINDING_ID")]
+        finding_id: String,
+        #[arg(long, value_enum)]
+        decision: ReviewDecision,
+        /// Evidence digest printed by the check that was actually reviewed.
+        #[arg(long, required = true, value_name = "HASH")]
+        expect_evidence: String,
+        /// Required when appending to existing review history.
+        #[arg(long, value_name = "HASH")]
+        expect_hash: Option<String>,
+        /// Markdown explanation of this decision and its assumptions.
+        #[arg(long, required = true, value_name = "PATH")]
+        reason_file: PathBuf,
+        /// Additional reviewed evidence, including its expected content hash.
+        #[arg(long, value_name = "PATH=sha256:HASH")]
+        watch: Vec<String>,
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long)]
+        no_global: bool,
+        #[arg(long)]
+        no_host_ignores: bool,
+    },
+    /// Inspect stored review decisions; does not claim they are current.
+    Reviews,
+
+    /// Initialize local or global Watchtower configuration.
     Init {
         #[arg(long)]
         global: bool,
     },
+    /// Validate, format and create a readable rule package from JSON.
     New {
         #[arg(value_name = "JSON")]
         json: Option<String>,
@@ -81,6 +131,7 @@ pub enum Command {
         #[arg(long)]
         global: bool,
     },
+    /// Run selected rules and apply current occurrence decisions.
     Check {
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
@@ -113,6 +164,7 @@ pub enum Command {
         #[arg(long)]
         stats: bool,
     },
+    /// Inspect shared query planning without checking source files.
     Plan {
         #[arg(long = "rule", value_name = "ID")]
         rules: Vec<String>,
@@ -121,14 +173,17 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = Optimizer::Auto)]
         optimizer: Optimizer,
     },
+    /// List rules, effective modes and package digests.
     List {
         #[arg(long = "no-global")]
         no_global: bool,
     },
+    /// Export a self-contained rule and its current package digest.
     Show {
         #[arg(value_name = "ID")]
         id: String,
     },
+    /// Validate source and metadata; use test for fixture execution.
     Validate {
         #[arg(value_name = "ID")]
         id: Option<String>,
@@ -137,12 +192,14 @@ pub enum Command {
         #[arg(long = "no-global")]
         no_global: bool,
     },
+    /// Run retained detector fixtures independently of review state.
     Test {
         #[arg(value_name = "ID")]
         id: Option<String>,
         #[arg(long = "no-global")]
         no_global: bool,
     },
+    /// Atomically update a rule, preserving regression evidence.
     Update {
         #[arg(value_name = "ID")]
         id: String,
@@ -155,6 +212,7 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Explicitly change whether findings are advisory or blocking.
     SetMode {
         #[arg(value_name = "ID")]
         id: String,
@@ -165,6 +223,7 @@ pub enum Command {
         #[arg(long = "no-global")]
         no_global: bool,
     },
+    /// Explain why a source path is selected or excluded.
     Explain {
         #[arg(value_name = "PATH")]
         path: String,
@@ -177,14 +236,17 @@ pub enum Command {
         #[arg(long = "no-host-ignores")]
         no_host_ignores: bool,
     },
+    /// Display configuration values and their origins.
     Config {
         #[arg(long = "no-global")]
         no_global: bool,
     },
+    /// Print a bundled machine-readable JSON schema.
     Schema {
         #[arg(value_enum, value_name = "NAME")]
         name: SchemaName,
     },
+    /// Manage derived caches; review records are never cache entries.
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
@@ -256,6 +318,7 @@ fn print_bundled_schema(name: &SchemaName) -> i32 {
         SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
         SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
         SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
+        SchemaName::Review => include_str!("../../../schemas/review.schema.json"),
     };
     print!("{schema}");
     if !schema.ends_with('\n') {
@@ -267,6 +330,52 @@ fn print_bundled_schema(name: &SchemaName) -> i32 {
 fn options(cli: &Cli) -> anyhow::Result<Value> {
     let mut object = common_options(&cli.common);
     match &cli.command {
+        Command::Fmt { id, check, global } => {
+            if let Some(id) = id {
+                object.insert("id".to_owned(), json!(id));
+            }
+            insert_if_true(&mut object, "check", *check);
+            insert_if_true(&mut object, "global", *global);
+        }
+        Command::Review {
+            finding_id,
+            decision,
+            expect_evidence,
+            expect_hash,
+            reason_file,
+            watch,
+            rules,
+            no_global,
+            no_host_ignores,
+        } => {
+            object.insert("finding_id".to_owned(), json!(finding_id));
+            object.insert(
+                "decision".to_owned(),
+                json!(match decision {
+                    ReviewDecision::NeedsReview => "needs_review",
+                    ReviewDecision::Acceptable => "acceptable",
+                    ReviewDecision::ConfirmedIssue => "confirmed_issue",
+                    ReviewDecision::AcceptedRisk => "accepted_risk",
+                }),
+            );
+            object.insert("expect_evidence".to_owned(), json!(expect_evidence));
+            if let Some(hash) = expect_hash {
+                object.insert("expect_hash".to_owned(), json!(hash));
+            }
+            let mut rationale = String::new();
+            File::open(reason_file)?
+                .take(128 * 1024 + 1)
+                .read_to_string(&mut rationale)?;
+            if rationale.len() > 128 * 1024 {
+                anyhow::bail!("rationale exceeds 128 KiB");
+            }
+            object.insert("rationale".to_owned(), json!(rationale));
+            insert_if_nonempty(&mut object, "watch", watch);
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+        }
+        Command::Reviews => {}
         Command::Init { global } => {
             object.insert("global".to_owned(), json!(global));
         }
@@ -524,16 +633,27 @@ fn print_text(value: &Value, color: &ColorMode) {
                 };
                 let label = style_label(label, color);
                 println!(
-                    "{}:{}:{} {} {} {}",
+                    "{}:{}:{} {} {} {} [{}]",
                     diagnostic["path"].as_str().unwrap_or("<unknown>"),
                     diagnostic["start_line"].as_u64().unwrap_or(0),
                     diagnostic["start_column"].as_u64().unwrap_or(0),
                     label,
                     diagnostic["severity"].as_str().unwrap_or("unknown"),
-                    diagnostic["rule_id"].as_str().unwrap_or("<unknown>")
+                    diagnostic["rule_id"].as_str().unwrap_or("<unknown>"),
+                    diagnostic["kind"].as_str().unwrap_or("unknown")
                 );
                 if let Some(message) = diagnostic["message"].as_str() {
                     println!("  {message}");
+                }
+                if let Some(id) = diagnostic["finding_id"].as_str() {
+                    println!("  finding: {id}");
+                    println!(
+                        "  evidence: {}",
+                        diagnostic["evidence_digest"].as_str().unwrap_or_default()
+                    );
+                }
+                if diagnostic["review_state"]["validity"] == "stale" {
+                    println!("  review: STALE — source, rule or watched evidence changed");
                 }
                 if let Some(help) = diagnostic["help"].as_str() {
                     println!("  help: {help}");
@@ -544,6 +664,12 @@ fn print_text(value: &Value, color: &ColorMode) {
             for error in errors {
                 println!("analysis error: {}", error);
             }
+        }
+        if let Some(records) = value.get("reviewed").and_then(Value::as_array) {
+            println!(
+                "{} occurrence(s) covered by current explicit review decisions (retained in JSON).",
+                records.len()
+            );
         }
         let summary = &value["summary"];
         println!(
@@ -591,6 +717,9 @@ fn insert_if_nonempty(object: &mut Map<String, Value>, key: &str, values: &[Stri
 
 fn command_string(command: &Command) -> String {
     match command {
+        Command::Fmt { .. } => "fmt",
+        Command::Review { .. } => "review",
+        Command::Reviews => "reviews",
         Command::Init { .. } => "init",
         Command::New { .. } => "new",
         Command::Check { .. } => "check",
@@ -616,7 +745,10 @@ fn command_name(args: &[OsString]) -> String {
         .find(|arg| {
             matches!(
                 *arg,
-                "init"
+                "fmt"
+                    | "review"
+                    | "reviews"
+                    | "init"
                     | "new"
                     | "check"
                     | "plan"
@@ -676,6 +808,7 @@ fn schema_string(value: &SchemaName) -> &'static str {
         SchemaName::Result => "result",
         SchemaName::Plan => "plan",
         SchemaName::Waivers => "waivers",
+        SchemaName::Review => "review",
     }
 }
 

@@ -3,6 +3,7 @@ use crate::config;
 use crate::digest::semantic_digest;
 use crate::discovery::{self, Workspace};
 use crate::fixtures;
+use crate::reviews;
 use crate::rule::{self, RulePackage, Submission};
 use crate::selection::{self, SelectedFile};
 use crate::waivers;
@@ -25,6 +26,11 @@ const COMMON_OPTIONS: &[&str] = &[
 pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
     validate_options(command, options)?;
     match command {
+        "fmt" => format_rules(options),
+        "review" => review(options),
+        "reviews" => reviews::list(&discovery::resolve_root(
+            options.get("root").and_then(Value::as_str),
+        )?),
         "init" => init(options),
         "new" => create(options),
         "update" => update(options),
@@ -49,6 +55,19 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
         .ok_or_else(|| anyhow!("options must be an object"))?;
     let mut allowed = COMMON_OPTIONS.iter().copied().collect::<HashSet<_>>();
     let command_options: &[&str] = match command {
+        "fmt" => &["global", "id", "check", "no_global"],
+        "review" => &[
+            "finding_id",
+            "decision",
+            "expect_evidence",
+            "expect_hash",
+            "rationale",
+            "watch",
+            "rules",
+            "no_global",
+            "no_host_ignores",
+        ],
+        "reviews" => &[],
         "init" => &["global"],
         "new" => &["global", "submission"],
         "update" => &[
@@ -153,7 +172,7 @@ fn init(options: &Value) -> Result<Value> {
 
 fn create(options: &Value) -> Result<Value> {
     let submission_value = required_submission_value(options)?;
-    let submission = rule::submission_from_value(submission_value)?;
+    let submission = rule::prepare_submission(rule::submission_from_value(submission_value)?)?;
     if submission.tests.as_ref().is_some_and(|suite| {
         suite
             .cases
@@ -214,7 +233,9 @@ fn create(options: &Value) -> Result<Value> {
 fn update(options: &Value) -> Result<Value> {
     let id = required_string(options, "id")?;
     let expected = required_string(options, "expect_hash")?;
-    let submission = rule::submission_from_value(required_submission_value(options)?)?;
+    let submission = rule::prepare_submission(rule::submission_from_value(
+        required_submission_value(options)?,
+    )?)?;
     if submission.tests.as_ref().is_some_and(|suite| {
         suite
             .cases
@@ -318,7 +339,13 @@ fn update(options: &Value) -> Result<Value> {
 }
 
 fn check(options: &Value) -> Result<Value> {
-    let workspace = discovery::discover(options)?;
+    let mut workspace = discovery::discover(options)?;
+    if bool_option(options, "no_host_ignores", false)? {
+        workspace.effective_config.scan.honor_git_local_excludes = false;
+    }
+    if bool_option(options, "include_ignored", false)? {
+        workspace.effective_config.scan.respect_gitignore = false;
+    }
     let requested = requested_rules(options)?;
     let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
     let enabled = selected
@@ -553,7 +580,7 @@ fn check(options: &Value) -> Result<Value> {
                     &mut records,
                     package,
                     diagnostics,
-                    &selection.repository_files,
+                    applicable.iter().copied(),
                 );
             }
             Err(error) => {
@@ -608,6 +635,16 @@ fn check(options: &Value) -> Result<Value> {
     if !stale.is_empty() && bool_option(options, "strict", false)? {
         errors.push(json!({"error": "stale_waivers", "waivers": stale}));
     }
+    let review_result = reviews::load(&workspace.root).and_then(|store| {
+        reviews::apply(&workspace.root, diagnostics.clone(), &suppressed, &store)
+    });
+    let (diagnostics, reviewed, review_records) = match review_result {
+        Ok(state) => (state.diagnostics, state.reviewed, state.records),
+        Err(error) => {
+            errors.push(json!({"error": format!("invalid_review_state: {error}")}));
+            (diagnostics, Vec::new(), Vec::new())
+        }
+    };
     let mut notices = stale.clone();
     notices.extend(cache.notices.clone());
     let blocking = diagnostics
@@ -670,11 +707,13 @@ fn check(options: &Value) -> Result<Value> {
         "coordinate_encoding": "unicode-scalar-columns",
         "diagnostics": diagnostics,
         "suppressed": suppressed,
+        "reviewed": reviewed,
+        "review_records": review_records,
         "notices": notices,
         "errors": errors,
         "rules": rule_summaries,
         "files": selection.coverage,
-        "summary": {"checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
+        "summary": {"raw_findings": diagnostics.len()+reviewed.len()+suppressed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
         "gaps": relevant_gaps,
     });
     if bool_option(options, "stats", false)? {
@@ -933,7 +972,7 @@ fn show(options: &Value) -> Result<Value> {
         "show",
         "pass",
         0,
-        json!({"rule": rule::export_value(selected[0])?}),
+        json!({"rule": rule::export_value(selected[0])?, "digest": selected[0].digest}),
     ))
 }
 
@@ -1259,16 +1298,17 @@ struct Record {
     start: (usize, usize),
     end: (usize, usize),
     file_digest: String,
+    context_digest: String,
 }
 
-fn add_records(
+fn add_records<'a>(
     records: &mut Vec<Record>,
     package: &RulePackage,
     diagnostics: Vec<RawDiagnostic>,
-    files: &[SelectedFile],
+    files: impl IntoIterator<Item = &'a SelectedFile>,
 ) {
     let snapshots = files
-        .iter()
+        .into_iter()
         .map(|file| {
             (
                 file.path.as_str(),
@@ -1276,6 +1316,11 @@ fn add_records(
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let context_parts = snapshots
+        .iter()
+        .flat_map(|(path, (_, digest))| [path.as_bytes(), digest.as_bytes()])
+        .collect::<Vec<_>>();
+    let context_digest = semantic_digest("WT-REVIEW-CONTEXT-1", &context_parts);
     for diagnostic in diagnostics {
         let (source, file_digest) = snapshots
             .get(diagnostic.path.as_str())
@@ -1293,6 +1338,7 @@ fn add_records(
             end: coordinates(source, diagnostic.end_byte),
             diagnostic,
             file_digest: file_digest.to_owned(),
+            context_digest: context_digest.clone(),
         });
     }
 }
@@ -1411,7 +1457,7 @@ fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> 
         .unwrap_or(false);
     let start = record.start;
     let end = record.end;
-    Ok(json!({
+    let mut value = json!({
         "rule_id": package.qualified_id,
         "rule_digest": package.digest,
         "code": record.diagnostic.code,
@@ -1421,6 +1467,8 @@ fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> 
         "blocking": mode == "enforced" || (strict && mode == "advisory"),
         "path": record.diagnostic.path,
         "file_digest": record.file_digest,
+        "context_digest": record.context_digest,
+        "engine_digest": cache::compiled_semantic_identity(),
         "start_byte": record.diagnostic.start_byte,
         "end_byte": record.diagnostic.end_byte,
         "start_line": start.0,
@@ -1429,7 +1477,9 @@ fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> 
         "end_column": end.1,
         "message": definition.message,
         "help": definition.help
-    }))
+    });
+    reviews::decorate(&mut value, &record.matched_digest)?;
+    Ok(value)
 }
 
 fn coordinates(source: &str, offset: usize) -> (usize, usize) {
@@ -1484,6 +1534,12 @@ fn write_replacement(parent: &Path, submission: &Submission) -> Result<tempfile:
             .unwrap_or_default()
             .as_bytes(),
     )?;
+    if let Some(doc) = &submission.documentation {
+        fs::write(
+            temp.path().join("rule.md"),
+            doc.source.as_deref().unwrap_or_default(),
+        )?;
+    }
     if submission.tests.is_some() {
         fs::write(
             temp.path().join("tests.json"),
@@ -1580,4 +1636,96 @@ fn run_fixtures(
         }
         Ok(outcome.diagnostics)
     })
+}
+
+/// Format all selected packages before writing any of them. This command does
+/// not migrate manifests, mutate fixtures, or execute application code.
+fn format_rules(options: &Value) -> Result<Value> {
+    let global = bool_option(options, "global", false)?;
+    let mut discovery_options = options.clone();
+    if !global {
+        discovery_options["no_global"] = json!(true);
+    }
+    let workspace = discovery::discover(&discovery_options)?;
+    let requested = requested_rules(options)?;
+    let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
+    let wanted_scope = if global { "global" } else { "local" };
+    if requested.is_some() && selected.iter().any(|p| p.scope_name != wanted_scope) {
+        bail!("selected rule is outside the explicitly chosen formatting scope");
+    }
+    let mut pending = Vec::new();
+    for package in selected
+        .into_iter()
+        .filter(|p| p.scope_name == wanted_scope)
+    {
+        wt_runtime::compile(&package.manifest_value, &package.source)?;
+        let formatted = crate::formatting::format_source(&package.source)?;
+        wt_runtime::compile(&package.manifest_value, &formatted)?;
+        if formatted != package.source {
+            pending.push((package, formatted));
+        }
+    }
+    let check_only = bool_option(options, "check", false)?;
+    let mut changed = Vec::new();
+    for (package, formatted) in pending {
+        if !check_only {
+            let _lock = acquire_lock(package.directory.parent().unwrap(), &package.manifest.id)?;
+            let current = rule::load_package(&package.directory, &package.scope_name)?;
+            if current.digest != package.digest {
+                bail!("rule changed while formatting");
+            }
+            write_atomic_file(&package.directory.join("check.wt"), formatted.as_bytes())?;
+        }
+        changed.push(package.qualified_id.clone());
+    }
+    Ok(envelope(
+        "fmt",
+        if changed.is_empty() {
+            "pass"
+        } else {
+            "findings"
+        },
+        i32::from(check_only && !changed.is_empty()),
+        json!({"changed":changed,"check_only":check_only}),
+    ))
+}
+
+fn review(options: &Value) -> Result<Value> {
+    let id = required_string(options, "finding_id")?;
+    let mut check_options = serde_json::Map::new();
+    for key in COMMON_OPTIONS
+        .iter()
+        .copied()
+        .chain(["rules", "no_global", "no_host_ignores"])
+    {
+        if let Some(value) = options.get(key) {
+            check_options.insert(key.to_owned(), value.clone());
+        }
+    }
+    check_options.insert("no_cache".to_owned(), json!(true));
+    let checked = check(&Value::Object(check_options))?;
+    if checked["complete"] != true {
+        bail!("cannot record review after incomplete analysis");
+    }
+    let findings = checked["diagnostics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(checked["reviewed"].as_array().into_iter().flatten())
+        .filter(|f| f["finding_id"] == id)
+        .collect::<Vec<_>>();
+    if findings.len() != 1 {
+        bail!("finding is absent, waived, or ambiguous; run check again");
+    }
+    let finding = findings[0];
+    let workspace = discovery::discover(options)?;
+    let current = workspace
+        .packages
+        .iter()
+        .find(|p| finding["rule_id"] == p.qualified_id)
+        .ok_or_else(|| anyhow!("reviewed rule disappeared"))?;
+    if finding["rule_digest"] != current.digest {
+        bail!("rule changed after check");
+    }
+    reviews::record(&workspace.root, finding, options)
 }

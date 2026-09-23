@@ -962,6 +962,7 @@ mod tests {
 
     fn package(id: &str, execution: &str, include: &str) -> RulePackage {
         let manifest = Manifest {
+            documentation: None,
             schema_version: 2,
             id: id.to_owned(),
             title: id.to_owned(),

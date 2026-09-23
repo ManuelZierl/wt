@@ -1,6 +1,8 @@
 # Watchtower (WT)
 ## Product and technical specification
 
+> **2026-09-23 implementation amendment:** [Readable rules and occurrence reviews](docs/readable-rules-and-reviews.md) supersedes this document’s prose-storage, formatting, and contextual-exception handling. Rule package schema 3 stores Markdown documentation; pure detection is followed by evidence-bound review decisions. Other runtime and execution contracts remain unchanged.
+
 **Working name:** Watchtower  
 **Working command:** `wt`  
 **Specification revision:** 2  

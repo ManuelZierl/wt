@@ -1,13 +1,15 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "id": "no-todo-marker",
   "title": "No TODO marker in text files",
-  "description": "Reports TODO markers in text files.",
-  "rationale": "A retained marker usually means unfinished work and should be reviewed before submission.",
   "mode": "enforced",
   "severity": "warning",
   "execution": "file",
-  "scope": {"include": ["**/*.txt"]},
+  "scope": {
+    "include": [
+      "**/*.txt"
+    ]
+  },
   "diagnostics": {
     "todo-marker": {
       "kind": "violation",
@@ -15,10 +17,11 @@
       "help": "Resolve the TODO or document why it is intentionally retained."
     }
   },
-  "limitations": ["Only checks eligible UTF-8 text files whose paths match the scope.", "Does not infer whether a TODO is intentional."],
   "code": {
     "language": "wt-rule-1",
-    "capabilities": ["text.v1"],
+    "capabilities": [
+      "text.v1"
+    ],
     "source": "if file.text.contains(\"TODO\") { emit(file.span, \"todo-marker\"); }"
   },
   "tests": {
@@ -26,14 +29,33 @@
     "cases": [
       {
         "name": "reports-marker",
-        "files": [{"path": "notes.txt", "content": "TODO: finish this note\n"}],
-        "expect": [{"path": "notes.txt", "code": "todo-marker", "kind": "violation"}]
+        "files": [
+          {
+            "path": "notes.txt",
+            "content": "TODO: finish this note\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "notes.txt",
+            "code": "todo-marker",
+            "kind": "violation"
+          }
+        ]
       },
       {
         "name": "accepts-complete-note",
-        "files": [{"path": "notes.txt", "content": "This note is complete.\n"}],
+        "files": [
+          {
+            "path": "notes.txt",
+            "content": "This note is complete.\n"
+          }
+        ],
         "expect": []
       }
     ]
+  },
+  "documentation": {
+    "source": "# No TODO marker in text files\n\n## Description\n\nReports TODO markers in text files.\n\n## Rationale\n\nA retained marker usually means unfinished work and should be reviewed before submission.\n\n## Limitations\n\n- Only checks eligible UTF-8 text files whose paths match the scope.\n- Does not infer whether a TODO is intentional.\n"
   }
 }
