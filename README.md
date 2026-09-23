@@ -1,75 +1,53 @@
 # Watchtower
 
-Watchtower (`wt`, also shipped as `watchtower`) is a local-first CLI for running small, documented repository detectors. It accepts strict JSON rule submissions, stores readable `.wt` packages, and delegates validation and execution to `wt-core` and `wt-runtime`.
+Watchtower (`wt`, also shipped as `watchtower`) is a local-first CLI for running small, documented repository detectors. It accepts strict JSON rule submissions and stores readable `.wt` packages. No account, daemon, or hosted service is required.
 
-## Implementation Status
+## Install (Ubuntu 22.04+ x86-64)
 
-The current workspace implements the CLI adapter, strict JSON submission sources, package creation/update, streamed scoped file selection, validation, fixture tests, text/JSON output, verbatim bundled schema lookup, persistent content-verified caches with fixture gates, worker-backed execution, shared native queries, and the core exit-code envelopes. The bundled examples and CLI tests exercise those paths.
+```bash
+curl -fsSL https://raw.githubusercontent.com/ManuelZierl/wt/main/install.sh | bash
+```
 
-The full specification remains broader than this workspace. Current residual gaps include configurable runtime/optimizer profiles, hard OS memory enforcement on macOS/Windows, and the complete performance acceptance matrix. Repository changed-file checks retain the full authorized scope needed by repository rules. The checked-in schemas describe current JSON structures; they do not replace runtime validation. See [verification results](docs/verification.md) for the executed 10,000-file shared-query workload and its limits.
+The installer downloads the latest GitHub Release, checks its SHA-256 digest, and installs `wt` and `watchtower` to `~/.local/bin` without sudo or a Rust toolchain. Add that directory to `PATH` if needed. Set `WT_INSTALL_DIR` to choose another location, or `WT_VERSION=v0.1.0` to pin a release.
+
+### From source
+
+With [Rust](https://rustup.rs/) installed, install both commands from GitHub or a checkout:
+
+```bash
+cargo install --git https://github.com/ManuelZierl/wt.git wt-cli --locked
+# Or from this checkout:
+cargo install --path crates/wt-cli --locked
+```
+
+To build distributable binaries locally without using GitHub Actions, install [Zig 0.13.0](https://ziglang.org/download/) and `cargo-zigbuild`, then run:
+
+```bash
+cargo install cargo-zigbuild --version 0.23.4 --locked
+bash build-linux-release.sh
+```
+
+The script checks for a maximum glibc requirement of 2.35 and writes the release archive and its checksum to `dist/`. Run `bash tests/install.sh` to check the installer locally, then upload both files to a GitHub Release under the asset names produced by the script. To make a `.deb` for a particular Ubuntu version instead, run `bash build-ubuntu-deb.sh` on the oldest Ubuntu release you intend to support.
 
 ## Quickstart
 
-Build the two executable names:
-
-```bash
-cargo build -p wt-cli
-```
-
-To install both commands into Cargo's binary directory:
-
-```bash
-cargo install --path crates/wt-cli --locked
-```
-
-### Install on another Ubuntu machine
-
-For a private repository, copy this checkout (including `Cargo.lock`) to the machine. A transferable source archive can be made without granting the destination access to GitHub:
-
-```bash
-mkdir -p dist
-git archive --format=tar.gz --output=dist/wt-source.tar.gz HEAD
-# Transfer dist/wt-source.tar.gz to the destination, then unpack it there:
-mkdir wt-source && tar -xzf wt-source.tar.gz -C wt-source
-cd wt-source
-```
-
-On the destination install `build-essential` and the Rust toolchain named in `rust-toolchain.toml` using [rustup](https://rustup.rs/), then run from the unpacked checkout:
-
-```bash
-cargo install --path crates/wt-cli --locked
-wt --version
-watchtower --version
-```
-
-This builds both executables on the destination, without GitHub Actions. Cargo needs access to the dependencies on its first build. Alternatively, build a `.deb` on an Ubuntu machine with Cargo, Python 3, and `dpkg-deb`:
-
-```bash
-bash build-ubuntu-deb.sh
-# Transfer dist/wt_0.1.0_amd64.deb to the other machine, then there:
-sudo apt install ./wt_0.1.0_amd64.deb
-wt --version
-```
-
-Build the `.deb` on the **oldest Ubuntu release** you plan to install it on, with the same CPU architecture as the destination. Linux binaries built against newer glibc may not work on older Ubuntu releases. The package declares the builder's glibc version as a conservative minimum and installs both `wt` and `watchtower` into `/usr/bin`.
-
-Create a small repository and install the two shared-query examples as local advisory rules:
+From a source checkout, create a small repository and install the two shared-query examples as local advisory rules:
 
 ```bash
 mkdir -p /tmp/wt-demo
 printf 'request("foo123")\n' > /tmp/wt-demo/source.txt
 
-target/debug/wt new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
+wt new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
   < examples/shared-request-foo.json
-target/debug/watchtower new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
+watchtower new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
   < examples/shared-request-foo123.json
-target/debug/wt check --no-global --root /tmp/wt-demo --global-dir /tmp/wt-global
+wt check --no-global --root /tmp/wt-demo --global-dir /tmp/wt-global
 ```
 
 The final command prints a human-readable advisory finding. Use `--format json` for one machine-readable document, including structured command errors:
 
 ```bash
-target/debug/wt check --no-global --root /tmp/wt-demo --global-dir /tmp/wt-global --format json
+wt check --no-global --root /tmp/wt-demo --global-dir /tmp/wt-global --format json
 ```
 
 The examples intentionally use advisory mode. A finding is therefore labeled `ADVISORY` and exits `0`; enforced findings exit `1`.
@@ -77,14 +55,20 @@ The examples intentionally use advisory mode. A finding is therefore labeled `AD
 The decimal reference package is available both as a self-contained submission and as an editable package:
 
 ```bash
-target/debug/wt validate --file examples/template-number-decimal-step.json --format json
-target/debug/wt new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
+wt validate --file examples/template-number-decimal-step.json --format json
+wt new --stdin --root /tmp/wt-demo --global-dir /tmp/wt-global \
   < examples/template-number-decimal-step.json
-target/debug/wt test local/template-number-decimal-step --root /tmp/wt-demo \
+wt test local/template-number-decimal-step --root /tmp/wt-demo \
   --global-dir /tmp/wt-global --no-global --format json
 ```
 
 The package retains the invalid-TSX analysis-error vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares consolidated `text.v1` and `jsx.v1`; the schemas continue to accept `regex.v1` for legacy packages.
+
+## Implementation Status
+
+The current workspace implements the CLI adapter, strict JSON submission sources, package creation/update, streamed scoped file selection, validation, fixture tests, text/JSON output, verbatim bundled schema lookup, persistent content-verified caches with fixture gates, worker-backed execution, shared native queries, and the core exit-code envelopes. The bundled examples and CLI tests exercise those paths.
+
+The full specification remains broader than this workspace. Current residual gaps include configurable runtime/optimizer profiles, hard OS memory enforcement on macOS/Windows, and the complete performance acceptance matrix. Repository changed-file checks retain the full authorized scope needed by repository rules. The checked-in schemas describe current JSON structures; they do not replace runtime validation. See [verification results](docs/verification.md) for the executed 10,000-file shared-query workload and its limits.
 
 ## Agent And CI Use
 
