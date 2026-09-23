@@ -478,7 +478,7 @@ fn check(options: &Value) -> Result<Value> {
             .iter()
             .map(|file| SourceFile {
                 path: file.path.clone(),
-                text: file.text.clone(),
+                text: file.text.clone().into(),
             })
             .collect::<Vec<_>>();
         let key = cache::repo_raw_key(
@@ -518,7 +518,7 @@ fn check(options: &Value) -> Result<Value> {
                     .iter()
                     .map(|file| crate::worker::SourceFileWire {
                         path: file.path.clone(),
-                        text: file.text.clone(),
+                        text: file.text.to_string(),
                     })
                     .collect(),
                 optimized,
@@ -793,7 +793,7 @@ impl FileExecution<'_> {
                     let result = program.execute_with_limits(
                         &[SourceFile {
                             path: file.path.clone(),
-                            text: file.text.clone(),
+                            text: file.text.clone().into(),
                         }],
                         &mut self.arena,
                         wt_runtime::RuntimeLimits {
@@ -1563,7 +1563,7 @@ fn run_fixtures(
                 .iter()
                 .map(|file| crate::worker::SourceFileWire {
                     path: file.path.clone(),
-                    text: file.text.clone(),
+                    text: file.text.to_string(),
                 })
                 .collect(),
             optimized: true,

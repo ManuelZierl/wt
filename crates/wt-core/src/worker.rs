@@ -203,7 +203,7 @@ impl WorkerRuntime {
             .into_iter()
             .map(|file| SourceFile {
                 path: file.path,
-                text: file.text,
+                text: file.text.into(),
             })
             .collect::<Vec<_>>();
         let mut arena = QueryArena::new(request.optimized);
