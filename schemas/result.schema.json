@@ -63,7 +63,7 @@
     "runtime-stats": {
       "type": "object",
       "additionalProperties": false,
-      "patternProperties": {"^(regex_evaluations|text_evaluations)$": {"type":"integer","minimum":0}},
+      "patternProperties": {"^(regex_evaluations|text_evaluations|cache_key_bytes_hashed)$": {"type":"integer","minimum":0}},
       "properties": {"optimized": {"type": "boolean"}, "snapshot_reads": {"type": "integer", "minimum": 0}, "snapshot_bytes": {"type": "integer", "minimum": 0}, "logical_query_requests": {"type": "integer", "minimum": 0}, "physical_query_evaluations": {"type": "integer", "minimum": 0}, "shared_result_hits": {"type": "integer", "minimum": 0}, "parser_evaluations": {"type": "integer", "minimum": 0}, "logical_steps": {"type": "integer", "minimum": 0}, "native_bytes": {"type": "integer", "minimum": 0}, "temporary_bytes": {"type": "integer", "minimum": 0}, "retained_memory_bytes": {"type": "integer", "minimum": 0}, "residual_invocations": {"type": "integer", "minimum": 0}, "source_reads": {"type": "integer", "minimum": 0}, "bytes_hashed": {"type": "integer", "minimum": 0}, "relevant_rule_file_pairs": {"type": "integer", "minimum": 0}}
     },
     "effective-policy": {

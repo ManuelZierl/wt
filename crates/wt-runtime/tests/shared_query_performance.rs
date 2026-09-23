@@ -23,19 +23,26 @@ fn shared_query_performance() {
             "diagnostics":{"hit":{"kind":"violation"}},
             "code":{"language":"wt-rule-1","capabilities":["text.v1","regex.v1"]}
         });
-        let programs = (0..consumers).map(|_| compile(&manifest, source).unwrap()).collect::<Vec<_>>();
+        let programs = (0..consumers)
+            .map(|_| compile(&manifest, source).unwrap())
+            .collect::<Vec<_>>();
         let mut elapsed = Vec::new();
         let mut last_stats = Value::Null;
         for _ in 0..repeats {
             // Fresh snapshots on every repeat; lazy content identities start cold.
-            let files = (0..file_count).map(|index| SourceFile {
-                path: format!("source-{index}.txt"), text: body.clone().into(),
-            }).collect::<Vec<_>>();
+            let files = (0..file_count)
+                .map(|index| SourceFile {
+                    path: format!("source-{index}.txt"),
+                    text: body.clone().into(),
+                })
+                .collect::<Vec<_>>();
             let mut arena = QueryArena::new(true);
             let started = Instant::now();
             for file in &files {
                 for program in &programs {
-                    let diagnostics = program.execute(std::slice::from_ref(file), &mut arena).unwrap();
+                    let diagnostics = program
+                        .execute(std::slice::from_ref(file), &mut arena)
+                        .unwrap();
                     assert!(black_box(diagnostics).is_empty());
                 }
                 arena.clear_file_results();
@@ -53,5 +60,7 @@ fn shared_query_performance() {
     }
     let report = serde_json::to_string_pretty(&report).unwrap();
     println!("{report}");
-    if let Ok(path) = std::env::var("WT_BENCH_REPORT") { std::fs::write(path, report).unwrap(); }
+    if let Ok(path) = std::env::var("WT_BENCH_REPORT") {
+        std::fs::write(path, report).unwrap();
+    }
 }

@@ -22,6 +22,27 @@ To install both commands into Cargo's binary directory:
 cargo install --path crates/wt-cli --locked
 ```
 
+### Install on another Ubuntu machine
+
+For a private repository, copy this checkout (including `Cargo.lock`) to the machine, install the Rust toolchain named in `rust-toolchain.toml` using [rustup](https://rustup.rs/), then run from the checkout:
+
+```bash
+cargo install --path crates/wt-cli --locked
+wt --version
+watchtower --version
+```
+
+This builds both executables on the destination, without GitHub Actions. Cargo needs access to the dependencies on its first build. Alternatively, build a `.deb` on an Ubuntu machine with Cargo, Python 3, and `dpkg-deb`:
+
+```bash
+bash build-ubuntu-deb.sh
+# Transfer dist/wt_0.1.0_amd64.deb to the other machine, then there:
+sudo apt install ./wt_0.1.0_amd64.deb
+wt --version
+```
+
+Build the `.deb` on the **oldest Ubuntu release** you plan to install it on, with the same CPU architecture as the destination. Linux binaries built against newer glibc may not work on older Ubuntu releases. The package declares the builder's glibc version as a conservative minimum and installs both `wt` and `watchtower` into `/usr/bin`.
+
 Create a small repository and install the two shared-query examples as local advisory rules:
 
 ```bash

@@ -13,13 +13,20 @@ use rhai::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use tree_sitter::Parser;
 
+mod shared_text;
+pub use shared_text::SharedText;
+#[cfg(test)]
+mod performance_tests;
+
 const MAX_SOURCE: usize = 128 * 1024;
+// Consumer budgets represent the original logical value cost, not the storage
+// layout (which shrinks when payloads become shared).
+const LOGICAL_VALUE_BYTES: usize = 104;
 const MAX_FRONTEND_NODES: usize = 1_000_000;
 const MAX_NESTING_DEPTH: usize = 64;
 const MAX_FILE_CEILING: usize = 64 * 1024 * 1024;
@@ -54,7 +61,7 @@ fn charge_consumer_budget(counter: &mut usize, bytes: usize) -> Result<()> {
 #[derive(Clone)]
 pub struct SourceFile {
     pub path: String,
-    pub text: String,
+    pub text: SharedText,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -195,8 +202,8 @@ struct MatchValue {
     file: usize,
     start: usize,
     end: usize,
-    text: String,
-    groups: HashMap<String, Option<String>>,
+    text: SharedText,
+    groups: Arc<HashMap<String, Option<SharedText>>>,
     reportable: bool,
 }
 
@@ -215,8 +222,8 @@ struct FileValue {
 #[derive(Clone)]
 struct AttrValue {
     kind: String,
-    canonical: String,
-    static_string: Option<String>,
+    canonical: SharedText,
+    static_string: Option<SharedText>,
 }
 
 #[derive(Clone)]
@@ -224,7 +231,7 @@ struct InputValue {
     file: usize,
     start: usize,
     end: usize,
-    attrs: Vec<(String, AttrValue)>,
+    attrs: Arc<Vec<(String, AttrValue)>>,
     spread: bool,
 }
 
@@ -233,7 +240,7 @@ struct LineValue {
     file: usize,
     start: usize,
     end: usize,
-    text: String,
+    text: SharedText,
 }
 
 #[derive(Clone)]
@@ -241,7 +248,7 @@ enum Value {
     Unit,
     Bool(bool),
     Int(i64),
-    Text(String),
+    Text(SharedText),
     File(FileValue),
     Span(SpanValue),
     Match(MatchValue),
@@ -309,6 +316,7 @@ struct ArenaStats {
     native_bytes: u64,
     temporary_bytes: usize,
     residual_invocations: usize,
+    cache_key_bytes_hashed: u64,
 }
 
 impl QueryArena {
@@ -340,6 +348,7 @@ impl QueryArena {
             "temporary_bytes": self.stats.temporary_bytes,
             "retained_memory_bytes": self.retained_bytes,
             "residual_invocations": self.stats.residual_invocations,
+            "cache_key_bytes_hashed": self.stats.cache_key_bytes_hashed,
         })
     }
 
@@ -439,7 +448,7 @@ impl QueryArena {
         self.stats.logical_requests += 1;
         let key = QueryKey {
             path: file.path.clone(),
-            digest: digest(file.text.as_bytes()),
+            digest: file.text.digest(&mut self.stats.cache_key_bytes_hashed),
             expression: pattern.expression.clone(),
             flags: pattern.flags,
             start,
@@ -455,7 +464,7 @@ impl QueryArena {
                         charge_consumer_budget(
                             temporary_bytes,
                             matches.iter().map(match_value_size).sum::<usize>()
-                                + matches.len() * std::mem::size_of::<Value>(),
+                                + matches.len() * LOGICAL_VALUE_BYTES,
                         )?;
                         Ok(matches
                             .iter()
@@ -509,17 +518,18 @@ impl QueryArena {
                 for name in &pattern.captures {
                     groups.insert(
                         name.clone(),
-                        captures
-                            .name(name)
-                            .map(|capture| capture.as_str().to_owned()),
+                        captures.name(name).map(|capture| {
+                            file.text
+                                .slice(start + capture.start()..start + capture.end())
+                        }),
                     );
                 }
                 result.push(MatchValue {
                     file: file_index,
                     start: absolute_start,
                     end: absolute_end,
-                    text: whole.as_str().to_owned(),
-                    groups,
+                    text: file.text.slice(absolute_start..absolute_end),
+                    groups: Arc::new(groups),
                     reportable: true,
                 });
             }
@@ -535,7 +545,7 @@ impl QueryArena {
             charge_consumer_budget(
                 temporary_bytes,
                 matches.iter().map(match_value_size).sum::<usize>()
-                    + matches.len() * std::mem::size_of::<Value>(),
+                    + matches.len() * LOGICAL_VALUE_BYTES,
             )?;
         }
         if self.optimized {
@@ -573,7 +583,7 @@ impl QueryArena {
         self.stats.logical_requests += 1;
         let key = QueryKey {
             path: file.path.clone(),
-            digest: digest(file.text.as_bytes()),
+            digest: file.text.digest(&mut self.stats.cache_key_bytes_hashed),
             expression: pattern.expression.clone(),
             flags: pattern.flags,
             start,
@@ -625,13 +635,13 @@ impl QueryArena {
     fn capture_text(
         &mut self,
         pattern: &Pattern,
-        text: &str,
+        text: &SharedText,
         temporary_bytes: &mut usize,
     ) -> Result<Option<MatchValue>> {
         self.stats.logical_requests += 1;
         let key = DerivedKey {
             path: String::new(),
-            digest: digest(text.as_bytes()),
+            digest: text.digest(&mut self.stats.cache_key_bytes_hashed),
             operation: "capture_text".into(),
             expression: pattern.expression.clone(),
             flags: pattern.flags,
@@ -679,7 +689,9 @@ impl QueryArena {
                 .map(|name| {
                     (
                         name.clone(),
-                        captures.name(name).map(|value| value.as_str().to_owned()),
+                        captures
+                            .name(name)
+                            .map(|value| text.slice(value.start()..value.end())),
                     )
                 })
                 .collect();
@@ -687,8 +699,8 @@ impl QueryArena {
                 file: 0,
                 start: 0,
                 end: 0,
-                text: whole.as_str().to_owned(),
-                groups,
+                text: text.slice(whole.start()..whole.end()),
+                groups: Arc::new(groups),
                 reportable: false,
             }))
         })();
@@ -727,7 +739,7 @@ impl QueryArena {
         self.stats.logical_requests += 1;
         let key = DerivedKey {
             path: file.path.clone(),
-            digest: digest(file.text.as_bytes()),
+            digest: file.text.digest(&mut self.stats.cache_key_bytes_hashed),
             operation: "jsx.v1".into(),
             expression: String::new(),
             flags: PatternFlags::default(),
@@ -740,7 +752,7 @@ impl QueryArena {
                         charge_consumer_budget(
                             temporary_bytes,
                             values.iter().map(input_value_size).sum::<usize>()
-                                + values.len() * std::mem::size_of::<Value>(),
+                                + values.len() * LOGICAL_VALUE_BYTES,
                         )?;
                         Ok(values
                             .iter()
@@ -765,7 +777,7 @@ impl QueryArena {
             charge_consumer_budget(
                 temporary_bytes,
                 values.iter().map(input_value_size).sum::<usize>()
-                    + values.len() * std::mem::size_of::<Value>(),
+                    + values.len() * LOGICAL_VALUE_BYTES,
             )?;
         }
         if self.optimized {
@@ -2270,10 +2282,6 @@ fn validate_scope_glob(glob: &str, pos: Position) -> Result<()> {
     Ok(())
 }
 
-fn digest(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(bytes).into()
-}
-
 fn reject_unsupported_literal_syntax(source: &str) -> Result<()> {
     let bytes = source.as_bytes();
     let mut index = 0;
@@ -2521,7 +2529,7 @@ impl EvalContext<'_> {
             Expr::StringConstant(value, _) => {
                 let value = value.to_string();
                 self.charge_temporary(value.len())?;
-                Ok(Value::Text(value))
+                Ok(Value::Text(value.into()))
             }
             Expr::Unit(_) => Ok(Value::Unit),
             Expr::Variable(data, ..) => {
@@ -2585,7 +2593,7 @@ impl EvalContext<'_> {
                 self.current_file = Some(file.index);
                 let path = &self.files[file.index].path;
                 self.charge_temporary(path.len())?;
-                Ok(Value::Text(path.to_owned()))
+                Ok(Value::Text(path.to_owned().into()))
             }
             (Value::File(file), "text") => {
                 self.current_file = Some(file.index);
@@ -2622,7 +2630,7 @@ impl EvalContext<'_> {
                 start: line.start,
                 end: line.end,
             })),
-            (Value::Attr(attr), "kind") => Ok(Value::Text(attr.kind)),
+            (Value::Attr(attr), "kind") => Ok(Value::Text(attr.kind.into())),
             (Value::Attr(attr), "canonical") => Ok(Value::Text(attr.canonical)),
             (Value::Attr(attr), "static_string") => {
                 Ok(attr.static_string.map_or(Value::Unit, Value::Text))
@@ -2633,7 +2641,7 @@ impl EvalContext<'_> {
 
     fn eval_method(&mut self, receiver: Value, call: &FnCallExpr, env: &mut Env) -> Result<Value> {
         self.charge()?;
-        self.charge_temporary((call.args.len() + 1) * std::mem::size_of::<Value>())?;
+        self.charge_temporary((call.args.len() + 1) * LOGICAL_VALUE_BYTES)?;
         let mut args = Vec::with_capacity(call.args.len() + 1);
         args.push(receiver);
         for arg in &call.args {
@@ -2649,7 +2657,7 @@ impl EvalContext<'_> {
     fn eval_call(&mut self, call: &FnCallExpr, env: &mut Env) -> Result<Value> {
         self.charge()?;
         let namespace = namespace_name(call);
-        self.charge_temporary(call.args.len() * std::mem::size_of::<Value>())?;
+        self.charge_temporary(call.args.len() * LOGICAL_VALUE_BYTES)?;
         let mut args = Vec::with_capacity(call.args.len());
         for arg in &call.args {
             args.push(self.eval_expr(arg, env)?);
@@ -2726,7 +2734,7 @@ impl EvalContext<'_> {
                     self.charge_temporary(
                         value.kind.len()
                             + value.canonical.len()
-                            + value.static_string.as_ref().map_or(0, String::len),
+                            + value.static_string.as_ref().map_or(0, |value| value.len()),
                     )?;
                 }
                 Ok(attr.map_or(Value::Unit, |value| Value::Attr(value.clone())))
@@ -2752,9 +2760,9 @@ impl EvalContext<'_> {
                     _ => bail!("group_text requires a match"),
                 };
                 let name = expect_text(args.get(1))?;
-                let value = matched.groups.get(name).and_then(Option::as_deref);
-                self.charge_temporary(value.map_or(0, str::len))?;
-                Ok(value.map_or(Value::Unit, |value| Value::Text(value.to_owned())))
+                let value = matched.groups.get(name).and_then(Option::as_ref);
+                self.charge_temporary(value.map_or(0, |value| value.len()))?;
+                Ok(value.map_or(Value::Unit, |value| Value::Text(value.clone())))
             }
             (
                 "text",
@@ -2791,7 +2799,7 @@ impl EvalContext<'_> {
                 self.charge_temporary(self.files.len() * std::mem::size_of::<usize>())?;
                 let mut indexes: Vec<_> = (0..self.files.len()).collect();
                 indexes.sort_by(|left, right| self.files[*left].path.cmp(&self.files[*right].path));
-                self.charge_temporary(indexes.len() * std::mem::size_of::<Value>())?;
+                self.charge_temporary(indexes.len() * LOGICAL_VALUE_BYTES)?;
                 Ok(Value::Sequence(
                     indexes
                         .into_iter()
@@ -2838,7 +2846,7 @@ impl EvalContext<'_> {
                     let mut value = String::with_capacity(bytes);
                     value.push_str(a);
                     value.push_str(b);
-                    Ok(Value::Text(value))
+                    Ok(Value::Text(value.into()))
                 }
                 _ => bail!("invalid operands to +"),
             },
@@ -2881,8 +2889,14 @@ impl EvalContext<'_> {
             let output_bytes = source
                 .len()
                 .saturating_add(line_count.saturating_mul(32))
-                .saturating_add(line_count * std::mem::size_of::<Value>());
-            let key = text_key(&self.files[file.index].path, source, name, &[]);
+                .saturating_add(line_count * LOGICAL_VALUE_BYTES);
+            let key = text_key(
+                &self.files[file.index].path,
+                source,
+                name,
+                &[],
+                &mut self.arena.stats.cache_key_bytes_hashed,
+            );
             return self.arena.text_query(
                 key,
                 Some(file.index),
@@ -2901,7 +2915,7 @@ impl EvalContext<'_> {
                                 file: file.index,
                                 start,
                                 end,
-                                text: source[start..end].to_owned(),
+                                text: source.slice(start..end),
                             }));
                             start = index + 1;
                         }
@@ -2911,25 +2925,31 @@ impl EvalContext<'_> {
                             file: file.index,
                             start,
                             end: source.len(),
-                            text: source[start..].to_owned(),
+                            text: source.slice(start..source.len()),
                         }));
                     }
                     Ok(Value::Sequence(lines))
                 },
             );
         }
-        let text = expect_text(args.first())?;
+        let text = expect_shared_text(args.first())?;
         let operand_bytes = args.iter().map(value_size).sum::<usize>();
         self.charge_native(operand_bytes)?;
         let argument_texts = args
             .iter()
             .skip(1)
-            .map(|value| expect_text(Some(value)))
+            .map(|value| expect_shared_text(Some(value)))
             .collect::<Result<Vec<_>>>()?;
         let path = self
             .current_file
             .map_or("", |index| self.files[index].path.as_str());
-        let key = text_key(path, text, name, &argument_texts);
+        let key = text_key(
+            path,
+            text,
+            name,
+            &argument_texts,
+            &mut self.arena.stats.cache_key_bytes_hashed,
+        );
         match name {
             "contains" => {
                 let needle = expect_text(args.get(1))?;
@@ -2956,7 +2976,7 @@ impl EvalContext<'_> {
                 let trimmed = text.trim();
                 self.arena
                     .text_query(key, None, trimmed.len(), &mut self.temporary_bytes, || {
-                        Ok(Value::Text(trimmed.to_owned()))
+                        Ok(Value::Text(trimmed.to_owned().into()))
                     })
             }
             "split" => {
@@ -2968,14 +2988,12 @@ impl EvalContext<'_> {
                 if count > MAX_SEQUENCE {
                     bail!("sequence limit exceeded");
                 }
-                let output_bytes = text
-                    .len()
-                    .saturating_add(count * std::mem::size_of::<Value>());
+                let output_bytes = text.len().saturating_add(count * LOGICAL_VALUE_BYTES);
                 self.arena
                     .text_query(key, None, output_bytes, &mut self.temporary_bytes, || {
                         let values = text
                             .split(separator)
-                            .map(|part| Value::Text(part.to_owned()))
+                            .map(|part| Value::Text(part.to_owned().into()))
                             .collect::<Vec<_>>();
                         Ok(Value::Sequence(values))
                     })
@@ -2993,7 +3011,7 @@ impl EvalContext<'_> {
                     .ok_or_else(|| anyhow!("temporary string size overflow"))?;
                 self.arena
                     .text_query(key, None, value_len, &mut self.temporary_bytes, || {
-                        Ok(Value::Text(text.replace(from, to)))
+                        Ok(Value::Text(text.replace(from, to).into()))
                     })
             }
             "len_bytes" => self
@@ -3079,7 +3097,7 @@ impl EvalContext<'_> {
                     .patterns
                     .get(pattern_name)
                     .ok_or_else(|| anyhow!("unknown pattern {pattern_name}"))?;
-                let text = expect_text(args.get(1))?;
+                let text = expect_shared_text(args.get(1))?;
                 self.charge_native(text.len())?;
                 let matched = self
                     .arena
@@ -3091,6 +3109,13 @@ impl EvalContext<'_> {
     }
 }
 
+fn expect_shared_text(value: Option<&Value>) -> Result<&SharedText> {
+    match value {
+        Some(Value::Text(value)) => Ok(value),
+        _ => bail!("expected text"),
+    }
+}
+
 fn expect_text(value: Option<&Value>) -> Result<&str> {
     match value {
         Some(Value::Text(value)) => Ok(value),
@@ -3098,14 +3123,20 @@ fn expect_text(value: Option<&Value>) -> Result<&str> {
     }
 }
 
-fn text_key(path: &str, text: &str, operation: &str, arguments: &[&str]) -> TextKey {
+fn text_key(
+    path: &str,
+    text: &SharedText,
+    operation: &str,
+    arguments: &[&SharedText],
+    bytes_hashed: &mut u64,
+) -> TextKey {
     TextKey {
         path: path.to_owned(),
-        digest: digest(text.as_bytes()),
+        digest: text.digest(bytes_hashed),
         operation: operation.to_owned(),
         arguments: arguments
             .iter()
-            .map(|argument| digest(argument.as_bytes()))
+            .map(|argument| argument.digest(bytes_hashed))
             .collect(),
     }
 }
@@ -3140,7 +3171,7 @@ fn match_value_size(value: &MatchValue) -> usize {
         + value
             .groups
             .iter()
-            .map(|(name, value)| name.len() + 24 + value.as_ref().map_or(0, String::len))
+            .map(|(name, value)| name.len() + 24 + value.as_ref().map_or(0, |value| value.len()))
             .sum::<usize>()
         + 64
 }
@@ -3157,7 +3188,7 @@ fn input_value_size(value: &InputValue) -> usize {
 fn attr_value_size(value: &AttrValue) -> usize {
     value.kind.len()
         + value.canonical.len()
-        + value.static_string.as_ref().map_or(0, String::len)
+        + value.static_string.as_ref().map_or(0, |value| value.len())
         + 32
 }
 fn expect_bool(value: Option<&Value>) -> Result<bool> {
@@ -3284,7 +3315,7 @@ fn collect_jsx_inputs(
                 file,
                 start: node.start_byte(),
                 end: node.end_byte(),
-                attrs,
+                attrs: Arc::new(attrs),
                 spread,
             });
         }
@@ -3316,7 +3347,7 @@ fn parse_jsx_attribute(node: tree_sitter::Node<'_>, source: &str) -> Result<(Str
             name,
             AttrValue {
                 kind: "boolean".into(),
-                canonical: String::new(),
+                canonical: String::new().into(),
                 static_string: None,
             },
         ));
@@ -3334,8 +3365,8 @@ fn parse_jsx_attribute(node: tree_sitter::Node<'_>, source: &str) -> Result<(Str
             let decoded = decode_js_string(body, quote)?;
             AttrValue {
                 kind: "string".into(),
-                canonical: serde_json::to_string(&decoded)?,
-                static_string: Some(decoded),
+                canonical: serde_json::to_string(&decoded)?.into(),
+                static_string: Some(decoded.into()),
             }
         }
         "jsx_expression" => {
@@ -3348,8 +3379,10 @@ fn parse_jsx_attribute(node: tree_sitter::Node<'_>, source: &str) -> Result<(Str
             )?;
             AttrValue {
                 kind: "expression".into(),
-                static_string: serde_json::from_str::<String>(&expression).ok(),
-                canonical: expression,
+                static_string: serde_json::from_str::<String>(&expression)
+                    .ok()
+                    .map(SharedText::from),
+                canonical: expression.into(),
             }
         }
         _ => bail!("unsupported JSX attribute value"),
@@ -3754,7 +3787,7 @@ mod tests {
                 .execute(
                     &[SourceFile {
                         path: file["path"].as_str().unwrap().into(),
-                        text,
+                        text: text.into(),
                     }],
                     &mut QueryArena::new(true),
                 )
@@ -3770,7 +3803,7 @@ mod tests {
             .execute(
                 &[SourceFile {
                     path: "frontend/src/invalid.tsx".into(),
-                    text: invalid,
+                    text: invalid.into(),
                 }],
                 &mut QueryArena::new(true),
             )
@@ -3950,7 +3983,7 @@ mod tests {
         let program = compile(&value, "return;").unwrap();
         let file = SourceFile {
             path: "large.ts".into(),
-            text: "x".repeat(5 * 1024 * 1024),
+            text: "x".repeat(5 * 1024 * 1024).into(),
         };
         assert!(program
             .execute(std::slice::from_ref(&file), &mut QueryArena::new(true))
@@ -3989,7 +4022,7 @@ mod tests {
         .unwrap();
         let file = SourceFile {
             path: "x".into(),
-            text: "x,".repeat(99_999),
+            text: "x,".repeat(99_999).into(),
         };
         assert!(file_program
             .execute(std::slice::from_ref(&file), &mut QueryArena::new(true))
@@ -4069,7 +4102,7 @@ mod tests {
         .unwrap();
         let source = SourceFile {
             path: "large.ts".into(),
-            text: "x".repeat(40),
+            text: "x".repeat(40).into(),
         };
         let mut arena = QueryArena::new(true);
         assert!(program.execute(&[source], &mut arena).is_err());

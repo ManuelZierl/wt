@@ -167,7 +167,7 @@ where
             };
             files.push(SourceFile {
                 path: fixture.path.clone(),
-                text,
+                text: text.into(),
             });
         }
         let has_requirements = package
