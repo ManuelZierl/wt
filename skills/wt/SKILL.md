@@ -40,7 +40,7 @@ Use an existing linter, behavioral regression test, type restriction, or API red
 
 Prefer a small, documented `text.v1` WRL1 detector. `check.wt` is a top-level statement body with an implicit read-only `file`; it is not `fn check(file)` and it is not arbitrary Rhai. Rhai is only the current backend for the restricted `wt-rule-1` contract.
 
-`text.v1` supplies the text, regex, path, and repository APIs. Use spans from the original source (`matched.span`, `line.span`, or `file.span`). Request `jsx.v1` only when actual TSX parsing is needed. Never use I/O, environment, network, process, clock, random, dynamic evaluation, imports, or unregistered calls.
+`text.v1` supplies the text, regex, path, and repository APIs. Use spans from the original source (`matched.span`, `line.span`, or `file.span`). Request `ast.v1` when the shape you care about is structural (a call, a loop body, an element) rather than textual; it matches python, javascript, typescript, tsx, or rust via `file.ast_match(language, pattern)`, and combines with `text.v1` freely. Never use I/O, environment, network, process, clock, random, dynamic evaluation, imports, or unregistered calls.
 
 A new submission uses `schema_version: 3`, a stable ID, title, severity, a nonempty scope, diagnostics, `documentation.source` containing the Markdown contract/rationale/limitations/evidence, and:
 

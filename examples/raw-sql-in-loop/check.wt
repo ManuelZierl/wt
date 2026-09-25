@@ -1,0 +1,9 @@
+for m in file.ast_match("python", "for $X in $ITER:\n    $$$BODY") {
+    let body = m.node("BODY");
+    if body == () {
+        continue;
+    }
+    for q in rx::find_in(body.span, "raw_sql") {
+        emit(q.span, "raw-sql-in-loop");
+    }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "orm-query-in-loop",
+  "title": "ORM query call inside a for loop",
+  "documentation": {"file": "rule.md"},
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["app/views.py", "app/tasks.py"]},
+  "diagnostics": {
+    "possible-n-plus-one": {
+      "kind": "review",
+      "message": "An ORM query (`.objects.<method>(...)`) runs on every iteration of this loop, a possible N+1 query.",
+      "help": "Prefetch the related rows before the loop (e.g. select_related/prefetch_related), or confirm this call is already cheap (cached, batched, or bounded)."
+    }
+  },
+  "code": {"language": "wt-rule-1", "capabilities": ["ast.v1"], "file": "check.wt"},
+  "tests_file": "tests.json",
+  "metadata": {"source": "tasks/02-structural-matching.md example 1"}
+}

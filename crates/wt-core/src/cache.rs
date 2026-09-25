@@ -21,6 +21,12 @@ const COMPILED_SEMANTIC_INPUT: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "\n",
     include_str!("../../wt-runtime/src/lib.rs"),
+    // ast.v1's matching engine and grammar/language mapping live in their own
+    // module; fold it in too so a change there (including a grammar bump
+    // reflected in Cargo.lock below) is runtime semantics like the rest of
+    // wt-runtime, and reopens affected review decisions.
+    "\n-- ast_match.rs --\n",
+    include_str!("../../wt-runtime/src/ast_match.rs"),
     "\n-- Cargo.lock --\n",
     include_str!("../../../Cargo.lock"),
     "\n-- rust-toolchain.toml --\n",

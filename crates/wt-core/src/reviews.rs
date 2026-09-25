@@ -617,4 +617,91 @@ mod golden_vectors {
             "sha256:33d87a000036666295070847b760e97e496d2672ed2ed0a2d730982ce4b900dc"
         );
     }
+
+    /// `engine_digest` folds in the compiled wt-runtime (ast.v1's matcher and
+    /// grammar/language mapping included, plus `Cargo.lock`'s pinned grammar
+    /// versions), so a runtime/grammar change changes it. Simulate that
+    /// change directly: an otherwise-identical finding with a different
+    /// `engine_digest` must reopen an acceptance that would otherwise still
+    /// be current, and for that reason specifically.
+    #[test]
+    fn engine_digest_change_reopens_an_otherwise_current_acceptance() {
+        let sha = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let record = Record {
+            schema_version: 1,
+            finding_id: "finding-1".into(),
+            evidence_digest: sha('a'),
+            decision: Decision::Acceptable,
+            rule_id: "local/x".into(),
+            code: "hit".into(),
+            path: "src/a.txt".into(),
+            start_byte: 0,
+            end_byte: 1,
+            matched_digest: sha('1'),
+            rule_digest: sha('2'),
+            file_digest: sha('3'),
+            context_digest: sha('4'),
+            engine_digest: sha('5'),
+            watched_files: BTreeMap::new(),
+            rationale_file: "review.md".into(),
+            previous: None,
+        };
+        let mut store = Store::default();
+        store.records.insert(
+            record.finding_id.clone(),
+            Stored {
+                record: record.clone(),
+                digest: sha('9'),
+                rationale: "accepted".into(),
+                revision: 1,
+            },
+        );
+
+        let current_finding = json!({
+            "finding_id": record.finding_id, "kind": "review",
+            "rule_digest": record.rule_digest, "file_digest": record.file_digest,
+            "context_digest": record.context_digest, "engine_digest": record.engine_digest,
+            "evidence_digest": record.evidence_digest,
+        });
+        let application =
+            apply(Path::new("."), vec![current_finding], &store).expect("apply succeeds");
+        assert_eq!(
+            application.diagnostics.len(),
+            0,
+            "unchanged evidence stays current and accepted"
+        );
+        assert_eq!(application.reviewed.len(), 1);
+        assert_eq!(
+            application.reviewed[0]["review_state"]["validity"],
+            "current"
+        );
+
+        let mut reengined_finding = json!({
+            "finding_id": record.finding_id, "kind": "review",
+            "rule_digest": record.rule_digest, "file_digest": record.file_digest,
+            "context_digest": record.context_digest, "engine_digest": sha('6'),
+            "evidence_digest": record.evidence_digest,
+        });
+        // Evidence is bound to engine_digest too (see `decorate`); a real
+        // pipeline would recompute it, but apply() only needs the flagged
+        // field to differ to detect the runtime-semantics change.
+        reengined_finding["evidence_digest"] = json!(sha('a'));
+        let application = apply(Path::new("."), vec![reengined_finding], &store).unwrap();
+        assert_eq!(
+            application.reviewed.len(),
+            0,
+            "a changed engine_digest is not silently accepted"
+        );
+        assert_eq!(application.diagnostics.len(), 1);
+        assert_eq!(
+            application.diagnostics[0]["review_state"]["validity"],
+            "stale"
+        );
+        let reasons = application.diagnostics[0]["review_state"]["reasons"]
+            .as_array()
+            .unwrap();
+        assert!(reasons
+            .iter()
+            .any(|reason| reason == "runtime_semantics_changed"));
+    }
 }

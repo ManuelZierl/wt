@@ -3646,10 +3646,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn decimal_fixture_suite_matches_expected_codes() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/template-number-decimal-step");
+    /// Compile an example package's `rule.json` + `check.wt` and assert every
+    /// case in its `tests.json` produces exactly the expected diagnostic
+    /// codes. Shared by every `examples/*` fixture-suite test.
+    fn run_example_fixture_suite(example_dir: &str) -> Program {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../{example_dir}"));
         let manifest: JsonValue =
             serde_json::from_str(&std::fs::read_to_string(root.join("rule.json")).unwrap())
                 .unwrap();
@@ -3682,8 +3684,30 @@ mod tests {
                 .map(|finding| finding.code)
                 .collect::<Vec<_>>();
             actual.sort();
-            assert_eq!(actual, expected, "fixture case {}", case["name"]);
+            assert_eq!(
+                actual, expected,
+                "{example_dir} fixture case {}",
+                case["name"]
+            );
         }
+        program
+    }
+
+    #[test]
+    fn orm_query_in_loop_fixture_suite_matches_expected_codes() {
+        run_example_fixture_suite("examples/orm-query-in-loop");
+    }
+
+    #[test]
+    fn raw_sql_in_loop_fixture_suite_matches_expected_codes() {
+        run_example_fixture_suite("examples/raw-sql-in-loop");
+    }
+
+    #[test]
+    fn decimal_fixture_suite_matches_expected_codes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/template-number-decimal-step");
+        let program = run_example_fixture_suite("examples/template-number-decimal-step");
         let invalid = std::fs::read_to_string(root.join("fixtures/invalid-tsx.tsx")).unwrap();
         assert!(program
             .execute(
@@ -3752,6 +3776,50 @@ mod tests {
         assert!(compile(&path, "rx::is_match(file, \"missing\");").is_err());
         let repo = manifest(json!({}), diagnostic, &["repo.v1"]);
         assert!(compile(&repo, "text::contains(file.text, \"x\");").is_err());
+    }
+
+    #[test]
+    fn unsupported_ast_language_fails_validation_with_a_clear_error() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match("cobol", "MOVE $X TO $Y") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("unsupported language must fail validation")
+        .to_string();
+        assert!(error.contains("WT104"));
+        assert!(error.contains("cobol"));
+        assert!(
+            error.contains("python"),
+            "lists supported languages: {error}"
+        );
+    }
+
+    #[test]
+    fn ast_match_requires_ast_v1_capability() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["text.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match("python", "$X") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("ast_match without ast.v1 must fail validation")
+        .to_string();
+        assert!(error.contains("WT104"));
+    }
+
+    #[test]
+    fn invalid_ast_pattern_fails_validation_not_execution() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match("python", "(((") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("a pattern that cannot parse must fail at compile time")
+        .to_string();
+        assert!(error.contains("WT100"));
     }
 
     #[test]

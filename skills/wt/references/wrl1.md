@@ -1,6 +1,7 @@
 # WRL1 authoring reference
 
-Use `code.language: "wt-rule-1"` and `code.capabilities: ["text.v1"]`.
+Use `code.language: "wt-rule-1"` and `code.capabilities: ["text.v1"]` (add
+`"ast.v1"` for structural matching, below).
 The detector is a top-level body with a read-only `file` binding. Repository
 rules declare `execution: "repository"` and receive `repo` instead.
 
@@ -72,9 +73,31 @@ Spans are opaque source handles. Never invent offsets or emit on a derived
 string. Byte offsets are zero-based, end-exclusive; human columns count Unicode
 scalar values. `find_all` completes or fails even if its consumer later breaks.
 
-For real TSX elements, add `jsx.v1` and use `jsx::inputs(file)`. Inputs expose
-`span`, `has_spread`, `duplicate("attribute")`, and `attr("attribute")`.
-Attributes expose `kind`, `canonical`, and optional `static_string`. Spreads,
-duplicates, and computed expressions may require a `review` diagnostic.
-This helper does not resolve application types or business meaning. A demanded
-parse failure is an error, not an empty input list.
+## Structural matching (`ast.v1`)
+
+Add `ast.v1` for structural, syntax-aware matching over python, javascript,
+typescript, tsx, or rust (see `wt capabilities` for the languages and grammar
+versions this build actually has). `language` and `pattern` are string
+literals, compiled once at rule-compile time; an invalid pattern or an
+unsupported/disabled language is a validation error, not a runtime one.
+
+| API | Result |
+|---|---|
+| `file.ast_match("language", "pattern")` | Finite sequence of structural matches in the whole file |
+| `matched.ast_match("language", "pattern")` | Matches nested inside a previous match's span ("X inside Y") |
+| `matched.node("NAME")` | The `$NAME`/`$$$NAME` metavariable capture, or unit if absent |
+| `matched.text`, `matched.span` | Same as any other match |
+
+```wt
+for m in file.ast_match("python", "for $X in $ITER:\n    $$$BODY") {
+    for q in m.node("BODY").ast_match("python", "$QS.objects.$METHOD($$$)") {
+        emit(q.span, "possible-n-plus-one");
+    }
+}
+```
+
+A file with any tree-sitter error/missing node is an analysis gap for every
+`ast.v1` call that touches it (incomplete, exit 2), never a silent no-match;
+parsing only happens for files an unguarded `ast_match` call actually reaches.
+`text.v1` and `ast.v1` combine freely, e.g. `rx::find_in(m.node("BODY").span, "pattern")`
+to regex-search only inside a captured structural span.

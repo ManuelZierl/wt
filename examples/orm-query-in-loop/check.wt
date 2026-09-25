@@ -1,0 +1,5 @@
+for m in file.ast_match("python", "for $X in $ITER:\n    $$$BODY") {
+    for q in m.node("BODY").ast_match("python", "$QS.objects.$METHOD($$$)") {
+        emit(q.span, "possible-n-plus-one");
+    }
+}

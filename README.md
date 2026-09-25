@@ -62,7 +62,7 @@ wt test local/template-number-decimal-step --root /tmp/wt-demo \
   --global-dir /tmp/wt-global --no-global --format json
 ```
 
-The package retains the invalid-TSX analysis-error vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares `text.v1` and `jsx.v1`.
+The package retains the invalid-TSX analysis-gap vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares `ast.v1` and matches TSX structurally with `file.ast_match(...)`.
 
 ## Readable Rules And Reviewed Occurrences
 
