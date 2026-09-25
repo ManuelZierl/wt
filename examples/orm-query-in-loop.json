@@ -10,7 +10,7 @@
   "execution": "file",
   "scope": {
     "include": [
-      "**/*.py"
+      "app/**/*.py"
     ]
   },
   "diagnostics": {
