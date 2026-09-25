@@ -31,14 +31,14 @@ File-local work is assigned to persistent worker processes. Jobs default to `min
 
 On Linux, workers apply a hard `RLIMIT_AS` address-space limit equal to the configured worker reservation (256 MiB by default). macOS and Windows currently use the scheduling reservation and logical allocation limits without a hard OS memory quota.
 
-Configuration schema 3 accepts these independently merged settings; omitted fields
+Configuration accepts these independently merged settings; omitted fields
 retain their built-in values. Logical settings are positive integers no greater
 than their documented ceilings. A smaller limit causes an explicit incomplete check
 if the detector exceeds it; it never converts work into a successful no-match.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "runtime": {
     "file_steps": 1000000,
     "file_native_bytes": 134217728,
@@ -57,7 +57,7 @@ for check/plan, including `--optimizer auto` when configuration says `off`.
 `wt config --format json` reports each effective value and its origin, and the
 check's `effective_policy` contains the effective profile. Raw and fixture cache
 keys include the effective runtime limits, so tighter limits cannot reuse an
-earlier successful result. Result protocol 2 refuses a non-default profile.
+earlier successful result.
 Memory reservations accept 256–512 MiB per worker and parent, with a total of
 512 MiB–1 GiB. Cross-field validation requires room for at least one worker.
 Default jobs are capped by the admitted worker count; explicit `--jobs` above
@@ -66,12 +66,11 @@ startup. macOS/Windows reservations are scheduling limits, not hard OS quotas.
 Other runtime budgets and physical optimizer knobs
 remain fixed and unsupported configuration keys fail validation.
 
-Configuration schema 3 adds `coverage.expectations`: each entry has a qualified
+`coverage.expectations` entries each have a qualified
 `rule_id`, positive `minimum_files`, and nonempty `reason`. Loaded global and
 local entries accumulate. An expected rule must be enabled, applicable, and
 complete over at least that many eligible files. Narrowed checks report
 `not_evaluated_partial`; omitting a global rule does not satisfy a local
-expectation for it. `--allow-empty` does not bypass an expectation. Schema-2
-configuration remains readable without the coverage field.
+expectation for it. `--allow-empty` does not bypass an expectation.
 
 These limits are safety ceilings, not benchmark claims. They do not establish the full performance acceptance matrix, constant-time scaling, or whole-spec completion.

@@ -242,7 +242,7 @@ Example local configuration:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "scan": {
     "respect_gitignore": true,
     "honor_git_local_excludes": true,
@@ -274,7 +274,7 @@ Configuration schema 3 adds optional `coverage.expectations` entries:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "coverage": {
     "expectations": [
       {
@@ -1516,16 +1516,20 @@ No fabricated numeric success threshold is imposed before a measured baseline. T
 | Contract | Target in this revision | Compatibility rule |
 |---|---|---|
 | Specification | Revision **3** | Consolidates revision 2 and later review/readability decisions; not a binary version. |
-| Rule package/submission | Schema **3** | Read schema 2; explicit writes migrate; Markdown replaces duplicate prose. |
+| Rule package/submission | Schema **1** | wt accepts exactly version 1 and rejects anything else with a clear error. |
 | WRL | `wt-rule-1` | No new language syntax solely because the spec changed. |
-| Detector fixtures | Schema **2** | Raw detector expectations stay independent of review decisions. |
+| Detector fixtures | Schema **1** | Raw detector expectations stay independent of review decisions. |
 | Occurrence decisions | Schema **1** | Preserve the pinned conservative whole-file/path/span contract and watched-file limits. |
-| Configuration | Schema **3** | Add explicit coverage expectations; schema 2 remains readable with no such expectations. |
-| Result/command protocol | Schema **3** | Compact/full projection is explicit; do not silently alter strict schema-2 output. |
-| Legacy waivers | Schema **2** | Read existing records; no silent conversion into evidence-bound approval. |
-| Capabilities report | Schema **1** | New offline build/feature/schema contract. |
+| Configuration | Schema **1** | Runtime/optimizer/coverage settings are always accepted; no compatibility mode. |
+| Result/command protocol | Schema **1** | One compact/full projection; wt has no prior installed version to stay compatible with. |
+| Waivers | Schema **1** | Exact matched-text policy; a weaker context boundary than an evidence-bound acceptance. |
+| Capabilities report | Schema **1** | Offline build/feature/schema contract. |
 
-The attached target schemas are specification artifacts, not automatically the schemas of `wt 0.1.0`. The pinned PR2 documentation describes schema-3 rules, review-schema 1, and its then-current additive result-schema 2; this revision deliberately changes the result protocol rather than continuing implicit field growth. [E-P]
+wt has no external users, so every contract above is reset to version 1 rather
+than carrying compatibility with a prior installed build. The version fields
+themselves remain, so a future breaking change is still detectable. The
+specification's own revision number (this document) is independent of all of
+these; it describes the document, not the wire contracts.
 
 ### 19.2 Compatibility requirements
 

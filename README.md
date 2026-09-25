@@ -62,35 +62,34 @@ wt test local/template-number-decimal-step --root /tmp/wt-demo \
   --global-dir /tmp/wt-global --no-global --format json
 ```
 
-The package retains the invalid-TSX analysis-error vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares consolidated `text.v1` and `jsx.v1`; the schemas continue to accept `regex.v1` for legacy packages.
+The package retains the invalid-TSX analysis-error vector separately because the fixture contract expresses expected diagnostics, not expected runtime failures. The decimal submission declares `text.v1` and `jsx.v1`.
 
 ## Readable Rules And Reviewed Occurrences
 
 New and updated packages store formatted `check.wt` programs and authoritative
 Markdown explanations in `rule.md`, with execution metadata in `rule.json`.
-Legacy rule packages remain importable. Use `wt fmt --check` in CI and `wt fmt`
-for manually edited local rules; ordinary checks never rewrite them.
+Use `wt fmt --check` in CI and `wt fmt` for manually edited local rules;
+ordinary checks never rewrite them.
 
 A pattern can require review without being an error in every context. `wt review`
 records one explicit decision against the evidence actually reviewed. Current
 acceptances remain visible; changed context makes them actionable again. These
 records are repository knowledge, not a cache or a replacement for trusted review.
-See [the format, review lifecycle and migration guide](docs/readable-rules-and-reviews.md).
+See [the format and review lifecycle guide](docs/readable-rules-and-reviews.md).
 
-The revision-3 workflow starts with `wt capabilities --format json` and the
-installed `wt guide author|review|language|migration`. Use `wt inspect FINDING_ID`
+The workflow starts with `wt capabilities --format json` and the
+installed `wt guide author|review|language`. Use `wt inspect FINDING_ID`
 to reevaluate a finding and see the prior rationale and stale-evidence reasons.
 `wt check --submission proposed-rule.json` previews a candidate without installing
 it. `wt update ID --stdin --expect-hash HASH --preview` reports proposed package
 and fixture changes without replacing the rule.
 
-Configuration schema 3 supports bounded `runtime` execution limits,
+Configuration supports bounded `runtime` execution limits,
 `optimizer.mode`, and explicit `coverage.expectations` for minimum
 completed eligible files per qualified rule; missing, disabled, or insufficient
-coverage makes full checks incomplete. Schema-2 configurations remain readable.
-JSON check output defaults to compact result protocol 3; `--detail full` adds
-reviewed/suppressed occurrences and file/review inventory. Where no revision-3
-facts would be discarded, use `--output-version 2 --detail full` for older clients.
+coverage makes full checks incomplete. JSON check output defaults to a compact
+result protocol; `--detail full` adds reviewed/suppressed occurrences and
+file/review inventory.
 
 ## Implementation Status
 
@@ -118,6 +117,6 @@ The portable agent skill is [`skills/wt/SKILL.md`](skills/wt/SKILL.md), with a r
 
 Rule source is capped at 128 KiB, source files default to 4 MiB with a 64 MiB binary ceiling, regex expressions at 8 KiB, patterns per rule at 128, and regex results per call at 10,000. The CLI bounds one JSON submission/file input to 8 MiB before strict parsing. File invocations have a hard 2-second watchdog and repository invocations a 30-second watchdog. Jobs default to the smaller of available CPUs and the configured memory capacity; explicit values are bounded to `1..=3` and may admit fewer. Worker and parent reservations default to 256 MiB each within a 1 GiB scheduling ceiling. Linux workers apply the configured address-space limit; macOS/Windows use scheduling and logical limits. These are safety ceilings, not throughput promises.
 
-`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints installed schemas; `--schema-version 2` selects older rule/submission/config/result contracts.
+`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints installed schemas.
 
-See [`docs/cli.md`](docs/cli.md), [`docs/runtime-configuration.md`](docs/runtime-configuration.md), [`examples/`](examples/), [`watchtower-spec-v3.md`](watchtower-spec-v3.md), and [`schemas/`](schemas/) for contracts and current boundaries. `spec.md` remains the previous revision for comparison.
+See [`docs/cli.md`](docs/cli.md), [`docs/runtime-configuration.md`](docs/runtime-configuration.md), [`examples/`](examples/), [`watchtower-spec-v3.md`](watchtower-spec-v3.md), and [`schemas/`](schemas/) for contracts and current boundaries.

@@ -26,7 +26,7 @@ wt schema submission
 wt schema tests
 ```
 
-`config` shows configured and invocation-effective values and origins. `list` shows declared/effective modes, scope, test availability, and digests. `show` returns the self-contained rule at `data.rule` with its same-read package hash at `data.digest` in result protocol 3. `plan` inspects the compiled plan without scanning application source:
+`config` shows configured and invocation-effective values and origins. `list` shows declared/effective modes, scope, test availability, and digests. `show` returns the self-contained rule at `data.rule` with its same-read package hash at `data.digest`. `plan` inspects the compiled plan without scanning application source:
 
 ```sh
 wt plan --rule local/rule-id --format json
@@ -109,13 +109,13 @@ The final CI policy and invocation must be outside the editing agent's control. 
 wt check --no-global --no-host-ignores --no-cache --format json
 ```
 
-Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, remove examples, or add a waiver merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization or a legacy waiver.
+Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, remove examples, or add a waiver merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization or a waiver.
 
 ## Readable Rules And Occurrence Decisions
 
 `new` and `update` automatically format `check.wt` and store long-form prose only
-in `rule.md`. Legacy schema-2 rules remain readable and migrate on explicit update.
-Use `wt fmt --check` for existing local scripts. `wt check` never reformats source.
+in `rule.md`. Use `wt fmt --check` for existing local scripts. `wt check` never
+reformats source.
 
 A `review` finding means **inspect this pattern**, not **this is a proven bug**.
 An acceptable occurrence is still a raw positive. Keep that detector fixture.
@@ -131,14 +131,13 @@ stored rationale, evidence digest, and specific stale reasons.
 A replacement requires `--expect-hash` and appends history. Changed owning files,
 repository-rule input sets, rule contracts, runtime semantics and explicitly
 watched files reopen the decision. Copies do not inherit acceptance. Missing
-matches are not automatically fixed. Protocol-3 summary results contain every
+matches are not automatically fixed. Summary results contain every
 actionable diagnostic and errors, plus accurate partition counts. Use
 `wt check --detail full --format json` for `reviewed`, `suppressed`, `files`, and
 `review_records`; absence of these arrays in the summary means omitted inventory,
 not zero occurrences.
 
-See `wt guide review` and `wt schema review` in an installed build. Rule schema 3,
-configuration schema 3, review schema 1, fixture schema 2, and result protocol 3
-are independent. Older result protocol 2 requires explicit
-`--output-version 2 --detail full` and rejects checks that cannot be represented without losing
-coverage policy or candidate-preview facts.
+See `wt guide review` and `wt schema review` in an installed build. Every
+contract wt accepts (rule/submission, configuration, review, fixture, and the
+result protocol) is at version 1; wt rejects any other version with a clear
+error.

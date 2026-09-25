@@ -8,9 +8,9 @@ The CLI is a thin Clap adapter around `wt_core::dispatch(command, options)`. It 
 
 ## Output
 
-`--format json` writes exactly one JSON document to stdout. Argument errors are also JSON when the format flag is recognizable before Clap finishes parsing. Progress and diagnostics are not mixed into JSON stdout. Text check output gives each finding a `BLOCKING` or `ADVISORY` label, message, help, and a summary. Result protocol 3 is the default: check uses top-level findings and counts; other commands put their payload in `data`. `--detail full` on check includes accepted and waived findings and file/review inventory. `--output-version 2` requests the older full check projection and fails when coverage policy or a candidate preview would be lost.
+`--format json` writes exactly one JSON document to stdout. Argument errors are also JSON when the format flag is recognizable before Clap finishes parsing. Progress and diagnostics are not mixed into JSON stdout. Text check output gives each finding a `BLOCKING` or `ADVISORY` label, message, help, and a summary. Check uses top-level findings and counts; other commands put their payload in `data`. `--detail full` on check includes accepted and waived findings and file/review inventory.
 
-`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints the installed schema; rule/submission schemas are deterministic version-pinned projections of bundled definitions. `--schema-version 2` selects older rule/submission/config/result variants. `wt capabilities --format json` is a standalone capability document. Neither reads the repository or global configuration.
+`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints the installed schema. `wt capabilities --format json` is a standalone capability document. Neither reads the repository or global configuration.
 
 Exit codes are `0` for a completed non-blocking result, `1` for blocking findings or failed fixture expectations, `2` for invalid invocation/configuration/incomplete analysis, and `130` for a controlled interruption.
 
@@ -41,4 +41,4 @@ and tests a candidate without changing the active package. `wt config --format
 json` includes configured and effective settings; schema-3 coverage expectations
 are evaluated separately from the finding count.
 See [the complete contract](readable-rules-and-reviews.md) for evidence boundaries,
-staleness, extra watched files, legacy migration, and enforcement semantics.
+staleness, extra watched files, and enforcement semantics.
