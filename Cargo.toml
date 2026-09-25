@@ -6,6 +6,11 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+# Not published to crates.io; installed via `cargo install --path` or the
+# prebuilt release archives. Lets the workspace's internal path dependencies
+# (wt-cli -> wt-core -> wt-runtime) stay unversioned without tripping
+# cargo-deny's wildcard-dependency check.
+publish = false
 
 [workspace.dependencies]
 anyhow = "1"
