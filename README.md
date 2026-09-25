@@ -88,8 +88,8 @@ Configuration supports bounded `runtime` execution limits,
 `optimizer.mode`, and explicit `coverage.expectations` for minimum
 completed eligible files per qualified rule; missing, disabled, or insufficient
 coverage makes full checks incomplete. JSON check output defaults to a compact
-result protocol; `--detail full` adds reviewed/suppressed occurrences and
-file/review inventory.
+result protocol; `--detail full` adds reviewed occurrences and file/review
+inventory.
 
 ## Implementation Status
 
@@ -109,7 +109,7 @@ wt plan --rule local/my-rule --format json
 wt check --rule local/my-rule --format json
 ```
 
-For a repository-local CI policy, use `wt check --no-global --no-host-ignores --no-cache --format json`. This is reproducible with respect to selected policy, but it is not tamper-proof when the editing agent controls the repository, checker binary, CI invocation, or `.wt` files. A trusted review/CI boundary must protect those inputs, the mode configuration, waivers, and the final command.
+For a repository-local CI policy, use `wt check --no-global --no-host-ignores --no-cache --format json`. This is reproducible with respect to selected policy, but it is not tamper-proof when the editing agent controls the repository, checker binary, CI invocation, or `.wt` files. A trusted review/CI boundary must protect those inputs, the mode configuration, and the final command.
 
 The portable agent skill is [`skills/wt/SKILL.md`](skills/wt/SKILL.md), with a runnable submission and WRL1 API reference. [Installation instructions](docs/agent-skill.md) cover OpenCode and other Agent Skills-compatible tools.
 
@@ -117,6 +117,6 @@ The portable agent skill is [`skills/wt/SKILL.md`](skills/wt/SKILL.md), with a r
 
 Rule source is capped at 128 KiB, source files default to 4 MiB with a 64 MiB binary ceiling, regex expressions at 8 KiB, patterns per rule at 128, and regex results per call at 10,000. The CLI bounds one JSON submission/file input to 8 MiB before strict parsing. File invocations have a hard 2-second watchdog and repository invocations a 30-second watchdog. Jobs default to the smaller of available CPUs and the configured memory capacity; explicit values are bounded to `1..=3` and may admit fewer. Worker and parent reservations default to 256 MiB each within a 1 GiB scheduling ceiling. Linux workers apply the configured address-space limit; macOS/Windows use scheduling and logical limits. These are safety ceilings, not throughput promises.
 
-`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints installed schemas.
+`wt schema rule|submission|tests|config|result|plan|review|capabilities` prints installed schemas.
 
 See [`docs/cli.md`](docs/cli.md), [`docs/runtime-configuration.md`](docs/runtime-configuration.md), [`examples/`](examples/), [`watchtower-spec-v3.md`](watchtower-spec-v3.md), and [`schemas/`](schemas/) for contracts and current boundaries.

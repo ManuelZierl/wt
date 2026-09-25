@@ -182,7 +182,6 @@ Nested `.wt/` directories do not cascade. They are separate configurations only 
 
 repository/.wt/
   config.json
-  waivers.json                         # legacy explicit policy, optional
   rules/<id>/
     rule.json
     rule.md
@@ -198,7 +197,7 @@ repository/.wt/
 
 Rule packages and occurrence decisions are durable repository knowledge. Review decisions are local even when their detector is global. Global rules MUST NOT distribute local occurrence acceptances into other repositories.
 
-Commit local manifests, explanations, code, fixtures, configuration, and deliberately accepted decisions/waivers. Derived caches live outside authoritative rule storage and may be deleted without deleting knowledge. Do not store a whole application snapshot or confidential source in a rule package merely to attach provenance.
+Commit local manifests, explanations, code, fixtures, configuration, and deliberately accepted decisions. Derived caches live outside authoritative rule storage and may be deleted without deleting knowledge. Do not store a whole application snapshot or confidential source in a rule package merely to attach provenance.
 
 Runtime-only lock files must not appear as unexplained source changes. A conforming implementation uses a documented coordination location or supplies narrowly scoped ignore entries during explicit initialization. Lock lifecycle is owned by the locking implementation; documentation MUST NOT instruct agents to unlink synchronization files opportunistically. An empty lock file does not prove that no process holds the lock.
 
@@ -270,7 +269,7 @@ The bundled `schemas/config.schema.json` fixes supported scan/runtime/optimizer 
 
 ### 4.3 Explicit coverage expectations
 
-Configuration schema 3 adds optional `coverage.expectations` entries:
+Configuration `coverage.expectations` entries are optional:
 
 ```json
 {
@@ -367,13 +366,13 @@ Review evidence can require explicit supporting files outside a detector's match
 
 A rule package consists of `rule.json` (machine configuration), `rule.md` (long-form contract and reasoning), `check.wt` (formatted detector), and, when supplied, `tests.json` plus fixture files. There is one authoritative code source and one authoritative prose document. No database registration, compilation artifact, or online document is required to edit a rule.
 
-New and explicitly updated packages use rule schema **3**. The manifest references `documentation.file: "rule.md"` and `code.file: "check.wt"`. It MUST NOT also retain schema-2 `description`, `rationale`, or `limitations` fields. `title` and short diagnostic messages stay structured for useful listings and command output.
+New and explicitly updated packages use rule schema **1**. The manifest references `documentation.file: "rule.md"` and `code.file: "check.wt"`. There are no separate `description`, `rationale`, or `limitations` fields; the Markdown document is the only authoritative prose. `title` and short diagnostic messages stay structured for useful listings and command output.
 
 ### 6.2 Manifest fields
 
 | Field | Requirement |
 |---|---|
-| `schema_version` | `3` for new target packages; schema 2 is legacy-readable. |
+| `schema_version` | `1`; wt accepts exactly this version and rejects anything else. |
 | `id`, `title` | Stable within its local/global scope; concise title. |
 | `mode` | Advisory by default; explicit enforced/disabled modes are retained. |
 | `severity` | Error, warning, or info; independent of mode and diagnostic kind. |
@@ -400,7 +399,7 @@ Markdown headings have no hidden execution semantics. A sentence such as “rech
 
 `wt new` accepts strict UTF-8 JSON using exactly one of a positional argument, stdin, or `--file`. Interchange uses `documentation.source`, `code.source`, and inline fixture `content`; it never follows arbitrary file references embedded in submitted JSON. On disk, WT materializes the prose and formatted program. Source-like fixtures SHOULD be materialized as separate files with safe generated names; small inline cases remain supported. Export resolves those references back into one self-contained object.
 
-`wt show ID --format json` returns `data.rule` and the complete package `data.digest` in result protocol 3 (historical protocol 2 uses top-level `rule`/`digest`), from the same bounded read. Use that digest for an optimistic update; do not fetch it separately from a later listing. A mixed-version package read or detected concurrent edit is an error.
+`wt show ID --format json` returns `data.rule` and the complete package `data.digest`, from the same bounded read. Use that digest for an optimistic update; do not fetch it separately from a later listing. A detected concurrent edit is an error.
 
 JSON rejects duplicate keys, unknown structural fields, trailing commas, or contradictory inline/file representations. Package references are root-relative, bounded, non-symlink paths confined to the package. Source/display paths and fixture paths must not be lossy-converted or conflated.
 
@@ -409,10 +408,6 @@ JSON rejects duplicate keys, unknown structural fields, trailing commas, or cont
 The package digest includes the manifest and all referenced authoritative files, including `rule.md` and fixtures. A prose edit can change the contract and therefore conservatively invalidates occurrence acceptances. The raw detector execution key may exclude long-form prose when all executable inputs are unchanged; final messages and policy are applied from the current package.
 
 Do not automatically declare a prose change harmless by asking an LLM or normalizing Markdown. Formatting-only detector changes may conservatively invalidate reviews too; new/update autoformatting makes such churn less frequent. Any more precise compatibility rule needs a tested explicit contract.
-
-### 6.6 Migration
-
-Read schema-2 packages without changing them. Explicit `new`/`update` converts their existing prose into `rule.md` without dropping limitations or evidence and reruns retained fixtures. `check`, `show`, `fmt`, and cache operations do not silently migrate package schema. Unknown future versions fail clearly. See section 19 for independent protocol and configuration versions.
 
 ## 7. Watchtower Rule Language and host API
 
@@ -667,7 +662,7 @@ These gates establish behavior against submitted examples. They do not certify a
 
 Keep detector fixture schema **2**. A suite contains uniquely named cases, each with unique virtual file paths, exactly one inline `content` or package `fixture` reference per file, and an expected diagnostic multiset. Source spans are optional constraints. Extra and missing diagnostics fail. A runtime failure cannot satisfy an expected diagnostic.
 
-Fixtures obey rule applicability and path scopes but not ambient repository/global scan exclusions, Git ignores, waivers, or occurrence decisions. Repository rules receive only the case's virtual file set. Missing required marker files can make a case non-applicable; output must expose that so it is not counted as a meaningful negative.
+Fixtures obey rule applicability and path scopes but not ambient repository/global scan exclusions, Git ignores, or occurrence decisions. Repository rules receive only the case's virtual file set. Missing required marker files can make a case non-applicable; output must expose that so it is not counted as a meaningful negative.
 
 **An acceptable occurrence of an intended review pattern remains a raw-positive fixture.** Its acceptance belongs in a lifecycle scenario, not an empty expected-diagnostic array.
 
@@ -681,7 +676,7 @@ Keep the following evidence categories distinct in documentation and validation 
 | Known miss | Intended concern is present, but the detector cannot currently recognize it. It is a coverage limitation, not reassuring negative evidence. |
 | Expected analysis failure | Invalid/unsupported demanded input; belongs in engine/conformance scenarios rather than ordinary no-finding fixtures. |
 
-Schema 2 is not overloaded with new result categories. Preserve ordinary detector cases and document known misses separately with stable case references in the Markdown or a non-executable evidence appendix. A future executable challenge-suite format needs its own advertised version.
+The fixture schema is not overloaded with new result categories. Preserve ordinary detector cases and document known misses separately with stable case references in the Markdown or a non-executable evidence appendix. A future executable challenge-suite format needs its own advertised version.
 
 ### 8.4 Before/after and challenge evidence
 
@@ -715,7 +710,7 @@ Common selection options remain `--root`, `--global-dir`, `--no-global` where me
 |---|---|
 | `wt init [--global]` | Idempotent creation of configuration/rule directories and documented lock hygiene; never overwrite existing policy. |
 | `wt capabilities --format json` | Compact installed build, protocol/schema/language/capability, resource-support, and guide identity report; offline and read-only. |
-| `wt guide [TOPIC]` | Installed release-matched authoring guidance. Topics include `author`, `review`, `language`, and `migration`; never fetch mutable online content. |
+| `wt guide [TOPIC]` | Installed release-matched authoring guidance. Topics include `author`, `review`, and `language`; never fetch mutable online content. |
 | `wt new JSON` / `--stdin` / `--file PATH` | Exactly one self-contained submission; default local/advisory; validate, format, test, then atomically create. |
 | `wt update ID --stdin --expect-hash HASH` | Replace a package atomically, preserving ID, checking concurrent edits and changed examples; accepts `--preview`. |
 | `wt check [PATH ...]` | Whole selected root by default, all enabled global/local rules; raw detection followed by current disposition. |
@@ -732,10 +727,10 @@ Common selection options remain `--root`, `--global-dir`, `--no-global` where me
 | `wt set-mode ID advisory|enforced|disabled --reason TEXT` | Explicit policy change; enforcing validates fixtures; reason retained. |
 | `wt explain PATH [--rule ID]` | Explain scope, ignores, applicability, expected coverage, and gaps. |
 | `wt config` | Separate configured and invocation-effective values, with origins. |
-| `wt schema NAME [--schema-version N]` | Installed versioned schemas; names include rule, submission, tests, config, result, plan, review, waivers, capabilities. |
+| `wt schema NAME` | Installed version-1 schemas; names include rule, submission, tests, config, result, plan, review, capabilities. |
 | `wt cache clear` | Delete derived WT caches only. |
 
-`capabilities`, `guide`, `inspect`, candidate preview, and structured update preview are revision-3 target interfaces. Their presence is not inferred from version strings; an installed executable advertises support. Existing scripts must negotiate the result protocol rather than assume all schema-2 fields survive a compact representation.
+`capabilities`, `guide`, `inspect`, candidate preview, and structured update preview are current wt interfaces. Their presence is not inferred from version strings; an installed executable advertises support.
 
 ### 9.2 A minimal normal loop
 
@@ -760,7 +755,7 @@ Shell variables above stand for actual returned identifiers, not hashes invented
 
 ### 9.3 Draft preview and update preview
 
-A candidate preview does not install, enable, disable, or migrate a rule. It analyzes the submitted detector alone, labels identity `candidate/<id>` in protocol-3 output, excludes existing occurrence acceptances and waivers, and reports actual scope and findings. It does not purport to satisfy the repository's active coverage policy. Candidate IDs cannot receive durable review decisions.
+A candidate preview does not install, enable, disable, or migrate a rule. It analyzes the submitted detector alone, labels identity `candidate/<id>` in the result output, excludes existing occurrence acceptances, and reports actual scope and findings. It does not purport to satisfy the repository's active coverage policy. Candidate IDs cannot receive durable review decisions.
 
 An update preview checks the current digest and prepares exactly the formatted candidate package that a real update would store. It displays code/docs/scope/mode/test changes and fixture results. It does not silently run an expensive repository comparison; the caller can explicitly run a candidate scan. A later real update repeats the digest guard; a preview is not a write reservation.
 
@@ -768,9 +763,9 @@ An update preview checks the current digest and prepares exactly the formatted c
 
 `--include-ignored` bypasses Git ignore filtering only. `--no-host-ignores` excludes Git-local/user ignores but keeps repository `.gitignore`. `--rule ID` is repeatable and resolves qualified identities. `--strict` blocks actionable advisory findings. `--no-cache` bypasses persistent caches but keeps in-run sharing. `--optimizer auto|off` selects the optimized or unshared reference path. `--jobs N` and `--max-file-bytes N` remain bounded by the published resource profile. `--stats` requests measured work. `--allow-empty` permits ordinary empty work but never overrides coverage expectations or analysis failures.
 
-`--show-reviewed` and `--show-suppressed` expand human output; `--detail summary|full` selects the protocol-3 inventory projection. Full output is explicit, not an implicit plan dump. Default output always includes all actionable findings and errors; it does not silently truncate them.
+`--show-reviewed` expands human output; `--detail summary|full` selects the inventory projection. Full output is explicit, not an implicit plan dump. Default output always includes all actionable findings and errors; it does not silently truncate them.
 
-Ordinary `check` never changes source, rule files, modes, review records, or waivers. It may write disposable caches. It does not silently advance an authoritative “last seen” state. Without an explicit historical scan input, label work `unreviewed`, not “new since your last scan.”
+Ordinary `check` never changes source, rule files, modes, or review records. It may write disposable caches. It does not silently advance an authoritative “last seen” state. Without an explicit historical scan input, label work `unreviewed`, not “new since your last scan.”
 
 ### 9.5 Changed-file checks
 
@@ -800,7 +795,7 @@ Argument failures use structured JSON when the requested output format/version c
 A human result should foreground unreviewed/current-open findings and stale acceptances, not repeat every accepted occurrence or internal query node. For example:
 
 ```text
-18 raw occurrences: 14 reviewed, 4 actionable, 0 waived.
+18 raw occurrences: 14 reviewed, 4 actionable.
   1 unreviewed; 2 previous acceptances are stale; 1 confirmed issue remains open.
 39 eligible files completed. Analysis complete; full selected policy evaluated.
 ```
@@ -817,21 +812,18 @@ Different rules retain separate findings even on identical source spans. Exact d
 
 Related evidence may be displayed only when actually available with verified source coordinates and a documented helper/API origin. WRL1's existing `emit` does not magically produce related spans. Do not invent a relationship merely because a regex captured a similar name. A future diagnostic API for related locations requires advertised capability support.
 
-### 10.3 Result protocol 3
+### 10.3 Result protocol
 
-The compact projection is an explicit new **result protocol 3**, not a silent removal of fields from the historical strict schema-2 envelope. Every ordinary structured command result identifies `schema_version`, command, status, exit code, and detail projection. Check results use their documented top-level fields; other normal command results put command-specific payload in `data` with explicit `stages`, `errors`, and `notices`. `capabilities` is the separately versioned standalone capability document, and `schema` emits the requested schema document; neither is falsely wrapped as a check result. Check results include completeness, selection scope, effective policy, coordinate encoding, all actionable `diagnostics`, all `errors`, coverage expectation results, notices, partition counts, and output-inventory availability.
+The compact projection is the one result protocol wt has. Every ordinary structured command result identifies `schema_version`, command, status, exit code, and detail projection. Check results use their documented top-level fields; other normal command results put command-specific payload in `data` with explicit `stages`, `errors`, and `notices`. `capabilities` is the separately versioned standalone capability document, and `schema` emits the requested schema document; neither is falsely wrapped as a check result. Check results include completeness, selection scope, effective policy, coordinate encoding, all actionable `diagnostics`, all `errors`, coverage expectation results, notices, partition counts, and output-inventory availability.
 
-The three raw-result partitions are disjoint:
+The two raw-result partitions are disjoint:
 
 - `diagnostics`: actionable raw findings, including unreviewed, confirmed/open, needs-review, and stale acceptances.
 - `reviewed`: raw findings covered by a current acceptable or accepted-risk decision.
-- `suppressed`: raw findings covered by an applicable explicit legacy waiver.
 
-`summary.raw_occurrences = actionable_occurrences + reviewed_occurrences + suppressed_occurrences`. Failed invocations cannot imply additional unseen raw occurrences are zero; completeness/coverage remains separate. Blocking counts are computed over actionable findings only. Review and violation counts are labels, not additional disjoint partitions.
+`summary.raw_occurrences = actionable_occurrences + reviewed_occurrences`. Failed invocations cannot imply additional unseen raw occurrences are zero; completeness/coverage remains separate. Blocking counts are computed over actionable findings only. Review and violation counts are labels, not additional disjoint partitions.
 
-Default `summary` detail includes all actionable findings/errors and accurate counts for accepted/suppressed occurrences, but omits their full arrays and the full source inventory. `inventory` explicitly says which lists are included. `--detail full` includes `reviewed`, `suppressed`, `files`, and `review_records`. Omission is never represented as an empty array that falsely claims no records exist.
-
-Legacy `--output-version 2 --detail full` is supported only when the result can be faithfully represented by the advertised legacy profile. Unrepresentable new facts, such as new coverage policy results, return a clear protocol error rather than dropping them. Installed schemas and capability output expose supported versions. No tool may treat missing schema-2 fields in protocol 3 as proof of a successful old-format result.
+Default `summary` detail includes all actionable findings/errors and accurate counts for accepted occurrences, but omits their full arrays and the full source inventory. `inventory` explicitly says which lists are included. `--detail full` includes `reviewed`, `files`, and `review_records`. Omission is never represented as an empty array that falsely claims no records exist.
 
 ### 10.4 Useful stale-decision inspection
 
@@ -856,7 +848,7 @@ source snapshots + rule definitions
     -> raw detector findings
 
 raw findings + current policy + stored decisions + current evidence
-    -> actionable findings, current reviewed findings, and explicit waivers
+    -> actionable findings and current reviewed findings
 ```
 
 Rule programs MUST NOT read or mutate review records, inspect whether a finding was accepted, or change other rules. Detector fixtures run without decisions. Occurrence state belongs to the host's post-detection layer; a correct raw match stays visible through inspection even when accepted.
@@ -902,7 +894,7 @@ The command MUST:
 
 1. Resolve the intended loaded policy and validate existing review history.
 2. Run a fresh uncached detector check with the rule's full normal evidence scope. Rule selection may limit independent rules, but a partial path/changed-only context cannot establish an acceptance.
-3. Find exactly one eligible unsuppressed occurrence and reject missing, ambiguous, candidate-preview, incomplete, or stale evidence.
+3. Find exactly one eligible occurrence and reject missing, ambiguous, candidate-preview, incomplete, or stale evidence.
 4. Read bounded rationale bytes and verify supplied watched hashes. Reuse source snapshots within this operation, then revalidate watched/owner/input-inventory evidence before publishing when concurrent edits are detectable.
 5. Under a per-record lock, recheck the expected previous record hash and atomically append a complete new revision. Publish nothing on failure.
 6. Return the written record hash, decision, evidence identity, and storage path. Do not claim authenticated human approval merely because a rationale exists.
@@ -927,19 +919,13 @@ Concurrent edits with the same expected record/package hash must not silently ov
 
 ### 11.7 Disposition ordering and failures
 
-Validate all loaded policy/review state, execute raw detection, apply current explicit waivers, then evaluate unsuppressed occurrence decisions. Waivers and reviewed results occupy separate disjoint output partitions. A waived occurrence cannot receive a new contextual decision without removing/revising the waiver first; existing historical records remain inspectable, not counted twice.
+Validate all loaded policy/review state, execute raw detection, then evaluate occurrence decisions. `diagnostics` and `reviewed` occupy separate disjoint output partitions.
 
 An unchanged acceptance cannot excuse a demanded parser failure, invalid rule, failed fixture gate, missing required source, or incomplete repository context. If unrelated independent work fails, the overall check is incomplete even if some other decisions can be evaluated; those evaluations never imply full-policy success.
 
 `confirmed_issue` and `needs_review` remain actionable. Valid current `acceptable`/`accepted_risk` records satisfy their occurrence even in strict mode. Policy still determines who may supply those records under a trusted outer boundary.
 
-### 11.8 Legacy waivers
-
-Read legacy `.wt/waivers.json` schema 2 with its original exact matching and reasoned-policy semantics. Do not silently convert a waiver into evidence-bound acceptance: a legacy matched-text waiver has a weaker context boundary. Report this limitation and keep suppressed findings visible. Migration requires actual fresh review.
-
-Ambiguous waiver matching is an error. An unmatched legacy waiver produces a maintenance notice; retain revision-2 strict-mode behavior that requires stale waiver review. No source comment silently disables detection. Do not widen an occurrence waiver to a directory glob to remove review work.
-
-### 11.9 Review burden and correction
+### 11.8 Review burden and correction
 
 New evidence may show an old judgment was wrong. Append a new needs-review/confirmed-issue/acceptable decision with its corrected rationale; preserve prior reasoning rather than rewriting history. Retiring a detector changes policy explicitly and does not declare old findings fixed.
 
@@ -1088,7 +1074,7 @@ load and validate all selected rules
            retain completed findings / errors
            release file-local derived values
     -> run explicit repository reductions over authorized snapshots
-    -> apply current modes, waivers, and evidence-bound occurrence decisions
+    -> apply current modes and evidence-bound occurrence decisions
     -> stable output and coverage accounting
 ```
 
@@ -1241,13 +1227,13 @@ Keep separate layers:
 | Persistent raw rule/file findings | Rule execution identity, normalized file path, exact content digest, effective applicability/scope facts, semantic versions, and logical limit profile. |
 | Repository-rule findings | Rule identity plus full authorized input manifest, including missing/present applicability inputs. |
 | Review disposition | Revalidate evidence and current review record; no cached approval from an earlier context. |
-| Final rendering/enforcement | Recompute with current modes, diagnostic presentation, waivers, review disposition, selected roots, and strictness. |
+| Final rendering/enforcement | Recompute with current modes, diagnostic presentation, review disposition, selected roots, and strictness. |
 
 **Do not key every file result solely by the entire ruleset hash.** Adding rule B should invalidate/rebuild the combined plan and evaluate B, while unchanged rule A's still-valid raw results remain reusable. Editing one rule must not force unrelated rules to re-execute on unchanged inputs. A global helper/runtime semantic change can legitimately invalidate many entries.
 
 The complete package hash is an acceptable conservative per-rule identity; narrower semantic digests may improve reuse if all observable inputs are accounted for. Pattern-sharing keys exclude aliases, author prose, and rule IDs, but rule findings remain attributed to their own identities. Scope and file path matter even when content is equal.
 
-Mode/waiver/decision changes must take effect without stale enforcement: store raw diagnostic codes/spans and apply current policy and validated occurrence decisions afterward, or include every relevant policy input in final-result keys. Every enabled supplied test suite must still have a valid passing entry before using source-result caches.
+Mode/decision changes must take effect without stale enforcement: store raw diagnostic codes/spans and apply current policy and validated occurrence decisions afterward, or include every relevant policy input in final-result keys. Every enabled supplied test suite must still have a valid passing entry before using source-result caches.
 
 Read/hash selected file contents to verify warm hits. Size/mtime alone is insufficient. Warm unchanged runs can avoid regex/helper/control-flow work, not necessarily all filesystem traversal or hashing. `--changed` is an explicit narrower selection, not an implicit cache heuristic.
 
@@ -1319,7 +1305,7 @@ A normal source-rule check does not require the application's dependencies, but 
 
 Ordinary agent review is allowed where project policy permits it. High-risk exceptions may require an independent agent/person or a protected review process. WT's local record labels, rationale, hashes, and lock files are not authenticated approval identities.
 
-Protect the checker binary/semantic versions, final invocation, loaded rules, rule Markdown, scope/ignore settings, coverage expectations, modes, decisions, waivers, and relevant history through a trusted outer boundary. An actor who controls all of these can weaken policy. A signed/hosted approval service is not a requirement of this local CLI.
+Protect the checker binary/semantic versions, final invocation, loaded rules, rule Markdown, scope/ignore settings, coverage expectations, modes, decisions, and relevant history through a trusted outer boundary. An actor who controls all of these can weaken policy. A signed/hosted approval service is not a requirement of this local CLI.
 
 A documented protected local-policy invocation is:
 
@@ -1410,7 +1396,6 @@ The target is accepted through the following independently testable behaviors. E
 ### 17.1 Contracts and authoring
 
 - **C01:** Installed capability/schema/guide identities agree; mismatches fail before an incompatible workflow is claimed.
-- **C02:** Schema-2 packages remain readable; explicit schema-3 migration preserves prose, source, and fixtures. Read-only commands do not migrate.
 - **C03:** New/update source is formatted; comments/string tokens survive; formatting is idempotent and a second run has no change.
 - **C04:** Invalid/unformattable source leaves the active package unchanged; returned digest identifies actual stored bytes.
 - **C05:** Markdown is authoritative, not duplicated in JSON, and prose cannot alter execution or create dependency watches.
@@ -1522,7 +1507,6 @@ No fabricated numeric success threshold is imposed before a measured baseline. T
 | Occurrence decisions | Schema **1** | Preserve the pinned conservative whole-file/path/span contract and watched-file limits. |
 | Configuration | Schema **1** | Runtime/optimizer/coverage settings are always accepted; no compatibility mode. |
 | Result/command protocol | Schema **1** | One compact/full projection; wt has no prior installed version to stay compatible with. |
-| Waivers | Schema **1** | Exact matched-text policy; a weaker context boundary than an evidence-bound acceptance. |
 | Capabilities report | Schema **1** | Offline build/feature/schema contract. |
 
 wt has no external users, so every contract above is reset to version 1 rather
@@ -1556,7 +1540,7 @@ The current specification delivery validates its own structure, schema examples,
 - **[E-D]** Decimal template-input report supplied earlier in this conversation and the unchanged revision-2 source/fixtures derived from it.
 - **[E-C]** The subsequent user/assistant discussion: explicit contextual exceptions, stateless detectors, durable occurrence judgments, product retrospective, and the request for this consolidated revision.
 
-Logs are not copied into the distribution because they contain unrelated private project context. `docs/evidence-and-decisions.md` gives exact transcript locations for relevant observations. New normative choices—particularly compact protocol 3, capability discovery, draft/inspection interfaces, and explicit coverage expectations—are design responses, not features empirically proved by the logs.
+Logs are not copied into the distribution because they contain unrelated private project context. `docs/evidence-and-decisions.md` gives exact transcript locations for relevant observations. New normative choices—particularly the compact result protocol, capability discovery, draft/inspection interfaces, and explicit coverage expectations—are design responses, not features empirically proved by the logs.
 
 ### Inherited technical references
 

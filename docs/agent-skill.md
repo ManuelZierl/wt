@@ -41,10 +41,10 @@ Agents with file-reading support can also read `skills/wt/SKILL.md` directly. Di
 The skill covers inspection, narrow documented detectors, strict JSON submission,
 retained regression examples, validation, creation, fixtures, plan inspection,
 full and partial checks, digest-protected updates, advisory/enforced modes,
-waivers, and trusted CI boundaries. Its sample submission is exercised by the
+and trusted CI boundaries. Its sample submission is exercised by the
 CLI acceptance tests.
 
-When enforcing policy, protect the checker version, `.wt/` policy, waivers,
+When enforcing policy, protect the checker version, `.wt/` policy,
 ignore settings, and final CI invocation through a trusted review boundary.
 A completed WT scan means the selected detectors finished on their eligible
 inputs; it does not prove application correctness.

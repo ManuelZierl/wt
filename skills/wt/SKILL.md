@@ -1,6 +1,6 @@
 ---
 name: wt
-description: Use when creating, inspecting, validating, testing, checking, updating, or enforcing Watchtower (WT) rules and configuration, including WRL1 detectors, fixtures, modes, coverage, waivers, and trusted CI.
+description: Use when creating, inspecting, validating, testing, checking, updating, or enforcing Watchtower (WT) rules and configuration, including WRL1 detectors, fixtures, modes, coverage, and trusted CI.
 ---
 
 # Watchtower (WT)
@@ -81,7 +81,7 @@ Use `--optimizer off --no-cache` for the unshared correctness reference path whe
 - `review` diagnostics block under enforced mode just like violations.
 - Runtime or fixture failures and analysis gaps are incomplete results, not no-match results.
 
-`--changed`, `--rule`, candidate previews and narrowed paths are partial coverage. Schema-3 `coverage.expectations` require each selected enabled and applicable qualified rule to complete the declared minimum number of eligible files in a full check. `--allow-empty` never bypasses an expectation. `--include-ignored` changes only Git-ignore filtering. `--show-reviewed` and `--show-suppressed` expand human output; stale waivers remain actionable, and waivers do not excuse analysis gaps.
+`--changed`, `--rule`, candidate previews and narrowed paths are partial coverage. `coverage.expectations` require each selected enabled and applicable qualified rule to complete the declared minimum number of eligible files in a full check. `--allow-empty` never bypasses an expectation. `--include-ignored` changes only Git-ignore filtering. `--show-reviewed` expands human output.
 
 ## Update Safely
 
@@ -109,7 +109,7 @@ The final CI policy and invocation must be outside the editing agent's control. 
 wt check --no-global --no-host-ignores --no-cache --format json
 ```
 
-Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, remove examples, or add a waiver merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization or a waiver.
+Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, or remove examples merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization.
 
 ## Readable Rules And Occurrence Decisions
 
@@ -133,7 +133,7 @@ repository-rule input sets, rule contracts, runtime semantics and explicitly
 watched files reopen the decision. Copies do not inherit acceptance. Missing
 matches are not automatically fixed. Summary results contain every
 actionable diagnostic and errors, plus accurate partition counts. Use
-`wt check --detail full --format json` for `reviewed`, `suppressed`, `files`, and
+`wt check --detail full --format json` for `reviewed`, `files`, and
 `review_records`; absence of these arrays in the summary means omitted inventory,
 not zero occurrences.
 

@@ -136,10 +136,8 @@ cannot excuse a runtime failure, missing analysis, or incomplete check.
 
 Modes still control blocking: advisory findings do not block unless `--strict`;
 enforced actionable findings block. A current explicit acceptance satisfies the
-review obligation even in strict mode. Existing reasoned waivers remain separate
-and visible in `suppressed`; they are not silently migrated into review judgments.
-`reviews` displays stored evidence and rationale but labels validity
-`not_evaluated`; only a fresh check evaluates it.
+review obligation even in strict mode. `reviews` displays stored evidence and
+rationale but labels validity `not_evaluated`; only a fresh check evaluates it.
 
 The compact result protocol is the default, with compact check inventory and
 explicit `--detail full`. Use the current bundled result schema for strict
