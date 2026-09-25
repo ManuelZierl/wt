@@ -37,7 +37,7 @@ else
     case "${WT_VERSION:-latest}" in
         latest) base=https://github.com/ManuelZierl/wt/releases/latest/download ;;
         v[0-9]*) base="https://github.com/ManuelZierl/wt/releases/download/$WT_VERSION" ;;
-        *) printf 'WT_VERSION must be a release tag such as v0.1.0.\n' >&2; exit 1 ;;
+        *) printf 'WT_VERSION must be a release tag such as v0.0.1.\n' >&2; exit 1 ;;
     esac
 fi
 

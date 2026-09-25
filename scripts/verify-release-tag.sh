@@ -6,7 +6,7 @@
 # touching a real branch.
 #
 # Usage: scripts/verify-release-tag.sh <tag> [branch]
-#   <tag>    the tag to verify, e.g. v0.1.0 (the "v" prefix is stripped when
+#   <tag>    the tag to verify, e.g. v0.0.1 (the "v" prefix is stripped when
 #            comparing against Cargo.toml's version)
 #   [branch] the ref the tag must be reachable from; defaults to "main"
 set -euo pipefail
