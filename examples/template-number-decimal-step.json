@@ -3,7 +3,7 @@
   "id": "template-number-decimal-step",
   "title": "Decimal template inputs use decimal-compatible steps",
   "documentation": {
-    "source": "# Decimal template inputs use decimal-compatible steps\n\n## Description\n\nChecks the verified template-number rendering context for an unintended integer step restriction.\n\n## Rationale\n\nHTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.\n\n## Limitations\n\n- Scoped to the two verified template-number rendering modules represented by the retained examples.\n- Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.\n- Unrecognized step expressions remain review findings; missing or integer-only steps are the violation.\n- Uses `ast.v1` structural matching (TSX), so it is naturally insensitive to whitespace, attribute order, and\n  extra attributes, and ignores JSX-looking text inside strings and comments. It does not special-case spread\n  attributes (`{...props}`) or a duplicated `type` attribute; either can make the match miss or pick either\n  occurrence, unlike the earlier `jsx.v1` version of this rule.\n"
+    "source": "# Decimal template inputs use decimal-compatible steps\n\n## Description\n\nChecks the verified template-number rendering context for an unintended integer step restriction.\n\n## Rationale\n\nHTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.\n\n## Limitations\n\n- Scoped to the two verified template-number rendering modules represented by the retained examples.\n- Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.\n- Unrecognized step expressions remain review findings; missing or integer-only steps are the violation.\n- Uses `ast.v1` structural matching (TSX), so it is naturally insensitive to whitespace, attribute order, and\n  extra attributes, and ignores JSX-looking text inside strings and comments. It does not special-case spread\n  attributes (`{...props}`) or a duplicated `type` attribute; either can make the match miss or pick either\n  occurrence.\n"
   },
   "mode": "advisory",
   "severity": "error",
@@ -185,6 +185,6 @@
     ]
   },
   "metadata": {
-    "source": "watchtower-spec-v3.md section 12"
+    "source": "Synthetic template-number rendering example; see docs/spec.md worked examples."
   }
 }

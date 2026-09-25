@@ -6,7 +6,7 @@
   "mode": "advisory",
   "severity": "warning",
   "execution": "file",
-  "scope": {"include": ["app/views.py", "app/tasks.py"]},
+  "scope": {"include": ["**/*.py"]},
   "diagnostics": {
     "possible-n-plus-one": {
       "kind": "review",
@@ -16,5 +16,5 @@
   },
   "code": {"language": "wt-rule-1", "capabilities": ["ast.v1"], "file": "check.wt"},
   "tests_file": "tests.json",
-  "metadata": {"source": "tasks/02-structural-matching.md example 1"}
+  "metadata": {"source": "Synthetic Django-style N+1 query example demonstrating ast.v1 structural matching."}
 }

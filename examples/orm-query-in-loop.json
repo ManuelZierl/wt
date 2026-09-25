@@ -10,8 +10,7 @@
   "execution": "file",
   "scope": {
     "include": [
-      "app/views.py",
-      "app/tasks.py"
+      "**/*.py"
     ]
   },
   "diagnostics": {
@@ -80,6 +79,6 @@
     ]
   },
   "metadata": {
-    "source": "tasks/02-structural-matching.md example 1"
+    "source": "Synthetic Django-style N+1 query example demonstrating ast.v1 structural matching."
   }
 }
