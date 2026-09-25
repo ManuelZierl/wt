@@ -1,9 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "id": "template-number-decimal-step",
   "title": "Decimal template inputs use decimal-compatible steps",
-  "description": "Checks the verified template-number rendering context for an unintended integer step restriction.",
-  "rationale": "HTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.",
+  "documentation": {
+    "source": "# Decimal template inputs use decimal-compatible steps\n\n## Description\n\nChecks the verified template-number rendering context for an unintended integer step restriction.\n\n## Rationale\n\nHTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.\n\n## Limitations\n\n- Scoped to the two verified template-number rendering modules represented by the retained examples.\n- Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.\n- Spreads, duplicate relevant attributes, and unrecognized step expressions remain review findings.\n"
+  },
   "mode": "advisory",
   "severity": "error",
   "execution": "file",
@@ -13,14 +14,13 @@
     "decimal-step": {"kind": "violation", "message": "Template numeric parameters require decimal-compatible input stepping.", "help": "Use step=\"any\" or the documented conditional equivalent."},
     "unverified-step": {"kind": "review", "message": "The numeric template input has a step expression this detector cannot verify.", "help": "Review the input manually or make the step expression explicit."}
   },
-  "limitations": ["Scoped to the two verified template-number rendering modules represented by the retained examples.", "Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.", "Spreads, duplicate relevant attributes, and unrecognized step expressions remain review findings."],
   "code": {
     "language": "wt-rule-1",
     "capabilities": ["text.v1", "jsx.v1"],
     "source": "for input in jsx::inputs(file) {\n    let type_attr = input.attr(\"type\");\n    if type_attr == () || type_attr.kind != \"expression\" {\n        continue;\n    }\n    let matched = rx::capture_text(\"template_number_type\", type_attr.canonical);\n    if matched == () {\n        continue;\n    }\n    if input.has_spread || input.duplicate(\"type\") || input.duplicate(\"step\") {\n        emit(input.span, \"unverified-step\");\n        continue;\n    }\n    let parameter = matched.group_text(\"parameter\");\n    let step = input.attr(\"step\");\n    if step == () {\n        emit(input.span, \"decimal-step\");\n        continue;\n    }\n    if step.static_string == \"any\" {\n        continue;\n    }\n    let expected = parameter + \" . type === \\\"number\\\" ? \\\"any\\\" : undefined\";\n    if step.kind == \"expression\" && step.canonical == expected {\n        continue;\n    }\n    if step.static_string == \"1\" || step.canonical == \"1\" {\n        emit(input.span, \"decimal-step\");\n    } else {\n        emit(input.span, \"unverified-step\");\n    }\n}"
   },
   "tests": {
-    "schema_version": 2,
+    "schema_version": 1,
     "cases": [
       {"name": "missing-step", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
       {"name": "fixed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={value . type === \"number\" ? \"any\" : undefined} />;\n}"}], "expect": []},
@@ -40,5 +40,5 @@
       {"name": "unrelated-retry-count-input", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function RetryCount({ retries }) {\n  return <input type=\"number\" value={retries} />;\n}"}], "expect": []}
     ]
   },
-  "metadata": {"source": "spec.md section 12", "legacy_capabilities": ["regex.v1"]}
+  "metadata": {"source": "watchtower-spec-v3.md section 12"}
 }

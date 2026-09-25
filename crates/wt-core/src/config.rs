@@ -195,16 +195,6 @@ impl<'de> Deserialize<'de> for ConfigFile {
         D: serde::Deserializer<'de>,
     {
         let raw = RawConfigFile::deserialize(deserializer)?;
-        if raw.schema_version == 2 && raw.coverage.is_some() {
-            return Err(serde::de::Error::custom(
-                "coverage requires configuration schema_version 3",
-            ));
-        }
-        if raw.schema_version == 2 && (raw.runtime.is_some() || raw.optimizer.is_some()) {
-            return Err(serde::de::Error::custom(
-                "runtime and optimizer require configuration schema_version 3",
-            ));
-        }
         let mut scan = ScanConfig::default();
         scan.supplied = ScanSupplied {
             respect_gitignore: raw.scan.respect_gitignore.is_some(),
@@ -356,17 +346,17 @@ pub fn load(path: &Path) -> Result<Option<ConfigFile>> {
     }
     let value = parse_json(std::str::from_utf8(&bytes)?)?;
     let config: ConfigFile = serde_json::from_value(value).context("invalid configuration")?;
-    if !matches!(config.schema_version, 2 | 3) {
-        bail!("configuration schema_version must be 2 or 3")
+    if config.schema_version != crate::CONTRACT_VERSION {
+        bail!(
+            "configuration schema_version must be {}",
+            crate::CONTRACT_VERSION
+        )
     }
     validate(&config)?;
     Ok(Some(config))
 }
 
 pub fn validate(config: &ConfigFile) -> Result<()> {
-    if config.schema_version == 2 && !config.coverage.expectations.is_empty() {
-        bail!("coverage expectations require configuration schema_version 3")
-    }
     let runtime = config.runtime;
     let ceilings = wt_runtime::RuntimeLimits::default();
     for (key, value, ceiling) in [
@@ -601,7 +591,7 @@ pub fn merge(
         });
     }
     validate(&ConfigFile {
-        schema_version: 3,
+        schema_version: crate::CONTRACT_VERSION,
         scan: scan.clone(),
         runtime,
         optimizer: optimizer.clone(),
@@ -616,7 +606,7 @@ pub fn merge(
         },
     })?;
     Ok(EffectiveConfig {
-        schema_version: 3,
+        schema_version: crate::CONTRACT_VERSION,
         scan,
         runtime,
         optimizer,

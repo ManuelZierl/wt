@@ -20,7 +20,6 @@ const COMMON_OPTIONS: &[&str] = &[
     "global_dir",
     "format",
     "color",
-    "output_version",
     "_worker_executable",
 ];
 
@@ -110,7 +109,7 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
         "plan" => &["rules", "rule", "no_global", "optimizer"],
         "list" => &["no_global"],
         "config" => &["no_global", "max_file_bytes"],
-        "schema" => &["schema", "id", "schema_version"],
+        "schema" => &["schema", "id"],
         "show" | "validate" | "test" => &["id", "rules", "rule", "no_global", "submission"],
         "set-mode" => &["id", "mode", "reason", "no_global"],
         "explain" => &[
@@ -145,11 +144,6 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             bail!("jobs must be between 1 and 3 under the absolute worker memory ceiling")
         }
     }
-    if let Some(version) = object.get("output_version") {
-        if !matches!(version.as_u64(), Some(2 | 3)) {
-            bail!("output_version must be 2 or 3")
-        }
-    }
     if let Some(detail) = object.get("detail") {
         if !matches!(detail.as_str(), Some("summary" | "full")) {
             bail!("detail must be summary or full")
@@ -172,7 +166,7 @@ fn init(options: &Value) -> Result<Value> {
         write_create_new(
             &config_path,
             br#"{
-  "schema_version": 3,
+  "schema_version": 1,
   "scan": {
     "respect_gitignore": true,
     "honor_git_local_excludes": true,
@@ -398,7 +392,7 @@ fn update(options: &Value) -> Result<Value> {
             "code": package.source != candidate.source,
             "patterns": json!(package.manifest.patterns) != json!(candidate.manifest.patterns),
             "diagnostics": json!(package.manifest.diagnostics) != json!(candidate.manifest.diagnostics),
-            "documentation": old_submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()) != submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()),
+            "documentation": old_submission.documentation.source != submission.documentation.source,
             "scope": serde_json::to_value(&package.manifest.scope)? != serde_json::to_value(&candidate.manifest.scope)?,
             "mode": package.manifest.mode != candidate.manifest.mode,
             "execution": package.manifest.execution != candidate.manifest.execution,
@@ -920,7 +914,7 @@ fn check(options: &Value) -> Result<Value> {
         .filter(|file| file.status == "binary")
         .count();
     let mut result = json!({
-        "schema_version": 2,
+        "schema_version": crate::CONTRACT_VERSION,
         "command": "check",
         "status": status,
         "exit_code": if !allow_empty && !no_work && (enabled.is_empty() || relevant_files.is_empty()) { 2 } else { exit_code },
@@ -1400,25 +1394,13 @@ fn schema(options: &Value) -> Result<Value> {
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("schema name is required"))?;
     if matches!(name.as_str(), "rule" | "submission") {
-        return crate::package_schema(
-            &name,
-            options
-                .get("schema_version")
-                .and_then(Value::as_u64)
-                .unwrap_or(3),
-        );
+        return crate::package_schema(&name, crate::CONTRACT_VERSION);
     }
     let schema = match name.as_str() {
         "rule" => include_str!("../../../schemas/rule.schema.json"),
         "submission" => include_str!("../../../schemas/submission.schema.json"),
         "tests" => include_str!("../../../schemas/tests.schema.json"),
-        "config" if options.get("schema_version").and_then(Value::as_u64) == Some(2) => {
-            include_str!("../../../schemas/config-v2.schema.json")
-        }
         "config" => include_str!("../../../schemas/config.schema.json"),
-        "result" if options.get("schema_version").and_then(Value::as_u64) != Some(2) => {
-            include_str!("../../../schemas/result-v3.schema.json")
-        }
         "result" => include_str!("../../../schemas/result.schema.json"),
         "plan" => include_str!("../../../schemas/plan.schema.json"),
         "waivers" => include_str!("../../../schemas/waivers.schema.json"),
@@ -1429,11 +1411,9 @@ fn schema(options: &Value) -> Result<Value> {
     crate::parse_json(schema)
 }
 
-const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit schema-3 JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
+const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
 const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
-const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1, regex.v1 and jsx.v1 are explicit capabilities. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
-const MIGRATION_GUIDE: &str = "Schema-2 rule packages remain readable. A deliberate wt update converts prose into rule.md and formats check.wt while preserving fixtures. Configuration schema 3 adds coverage.expectations; schema 2 remains readable. Never infer an acceptance from an old waiver. Recheck review evidence after package edits.";
-
+const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and jsx.v1 are explicit capabilities. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
 fn guide(options: &Value) -> Result<Value> {
     let topic = options
         .get("topic")
@@ -1443,10 +1423,7 @@ fn guide(options: &Value) -> Result<Value> {
         "author" => AUTHOR_GUIDE,
         "review" => REVIEW_GUIDE,
         "language" => LANGUAGE_GUIDE,
-        "migration" => MIGRATION_GUIDE,
-        _ => bail!(
-            "unknown installed guide topic {topic:?}; choose author, review, language or migration"
-        ),
+        _ => bail!("unknown installed guide topic {topic:?}; choose author, review or language"),
     };
     Ok(envelope(
         "guide",
@@ -1459,17 +1436,15 @@ fn guide(options: &Value) -> Result<Value> {
 
 fn capabilities() -> Result<Value> {
     Ok(
-        json!({"schema_version":1,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
-        "specification_profile":{"target_revision":3,"qualification":"not_yet_qualified"},
-        "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_v3","candidate_preview","configurable_logical_budgets"],
-        "schemas":{"rule":[2,3],"submission":[2,3],"config":[2,3],"tests":[2],"review":[1],"waivers":[2],"result":[2,3],"plan":[2],"capabilities":[1]},
-        "language":"wt-rule-1", "helpers":["text.v1","regex.v1","jsx.v1"],
+        json!({"schema_version":crate::CONTRACT_VERSION,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
+        "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_protocol","candidate_preview","configurable_logical_budgets"],
+        "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"waivers":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
+        "language":"wt-rule-1", "helpers":["text.v1","jsx.v1"],
         "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
         "guide_digests":{
             "author":crate::digest::digest_bytes(AUTHOR_GUIDE.as_bytes()),
             "review":crate::digest::digest_bytes(REVIEW_GUIDE.as_bytes()),
-            "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes()),
-            "migration":crate::digest::digest_bytes(MIGRATION_GUIDE.as_bytes())
+            "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes())
         },
         "configuration_keys":["scan.respect_gitignore","scan.honor_git_local_excludes","scan.include_hidden","scan.max_file_bytes","scan.exclude","runtime.file_steps","runtime.file_native_bytes","runtime.repository_steps","runtime.repository_native_bytes","runtime.worker_memory_bytes","runtime.parent_memory_bytes","runtime.total_memory_bytes","optimizer.mode","rules.mode_overrides","coverage.expectations"],
         "check_options":{"optimizer":["auto","off"],"maximum_jobs":3,"maximum_file_bytes":67108864},
@@ -1833,7 +1808,7 @@ fn envelope(command: &str, status: &str, exit_code: i32, fields: Value) -> Value
         Value::Object(value) => value,
         _ => Map::new(),
     };
-    object.insert("schema_version".to_owned(), json!(2));
+    object.insert("schema_version".to_owned(), json!(crate::CONTRACT_VERSION));
     object.insert("command".to_owned(), json!(command));
     object.insert("status".to_owned(), json!(status));
     object.insert("exit_code".to_owned(), json!(exit_code));
@@ -1862,12 +1837,14 @@ fn write_replacement(parent: &Path, submission: &Submission) -> Result<tempfile:
             .unwrap_or_default()
             .as_bytes(),
     )?;
-    if let Some(doc) = &submission.documentation {
-        fs::write(
-            temp.path().join("rule.md"),
-            doc.source.as_deref().unwrap_or_default(),
-        )?;
-    }
+    fs::write(
+        temp.path().join("rule.md"),
+        submission
+            .documentation
+            .source
+            .as_deref()
+            .unwrap_or_default(),
+    )?;
     if submission.tests.is_some() {
         fs::write(
             temp.path().join("tests.json"),

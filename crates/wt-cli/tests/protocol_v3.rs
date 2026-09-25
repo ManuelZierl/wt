@@ -168,12 +168,12 @@ fn installed_second_encounter_example_reopens_only_changed_evidence() {
 fn configured_execution_limits_invalidate_warm_results_and_cli_optimizer_wins() {
     let root = tempdir().unwrap();
     let schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/result-v3.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../../../schemas/result.schema.json")).unwrap();
     let validator = validator_for(&schema).unwrap();
-    let submission = json!({"schema_version":3,"id":"budget-marker","title":"Budget marker","mode":"advisory","severity":"info","scope":{"include":["**/*.txt"]},
+    let submission = json!({"schema_version":1,"id":"budget-marker","title":"Budget marker","mode":"advisory","severity":"info","scope":{"include":["**/*.txt"]},
         "patterns":{"mark":"bad"},"diagnostics":{"hit":{"kind":"review","message":"Review marker","help":"Inspect"}},
         "documentation":{"source":"# Intended constraint\nReview marker."},
-        "code":{"language":"wt-rule-1","capabilities":["regex.v1"],"source":"for m in rx::find_all(file, \"mark\") { emit(m.span, \"hit\"); }"}});
+        "code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"for m in rx::find_all(file, \"mark\") { emit(m.span, \"hit\"); }"}});
     assert_eq!(
         run(root.path(), &["new", "--stdin"], Some(&submission))["exit_code"],
         0
@@ -201,29 +201,10 @@ fn configured_execution_limits_invalidate_warm_results_and_cli_optimizer_wins() 
     );
     let cached = run(root.path(), &["check", "--no-global", "--stats"], None);
     assert_eq!(cached["stats"]["cache"]["raw_hits"], 1, "{cached}");
-    let legacy = run(
-        root.path(),
-        &[
-            "check",
-            "--no-global",
-            "--output-version",
-            "2",
-            "--detail",
-            "full",
-            "--stats",
-        ],
-        None,
-    );
-    let legacy_schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/result.schema.json")).unwrap();
-    assert!(
-        validator_for(&legacy_schema).unwrap().is_valid(&legacy),
-        "{legacy}"
-    );
 
     fs::write(
         root.path().join(".wt/config.json"),
-        json!({"schema_version":3,
+        json!({"schema_version":1,
         "runtime":{"file_native_bytes":1}, "optimizer":{"mode":"off"}})
         .to_string(),
     )
@@ -253,24 +234,10 @@ fn configured_execution_limits_invalidate_warm_results_and_cli_optimizer_wins() 
     assert_eq!(override_check["exit_code"], 2, "{override_check}");
     let plan = run(root.path(), &["plan", "--no-global"], None);
     assert_eq!(plan["data"]["optimizer"], "off");
-    let legacy = run(
-        root.path(),
-        &[
-            "check",
-            "--no-global",
-            "--output-version",
-            "2",
-            "--detail",
-            "full",
-        ],
-        None,
-    );
-    assert_eq!(legacy["exit_code"], 2, "{legacy}");
-    assert!(legacy["error"].as_str().unwrap().contains("profile"));
 
     fs::write(
         root.path().join(".wt/config.json"),
-        json!({"schema_version":3,
+        json!({"schema_version":1,
         "runtime":{"total_memory_bytes":536870912}})
         .to_string(),
     )
@@ -298,13 +265,13 @@ fn configured_execution_limits_invalidate_warm_results_and_cli_optimizer_wins() 
 fn default_protocol_is_compact_and_full_is_explicit() {
     let root = tempdir().unwrap();
     let schema: Value =
-        serde_json::from_str(include_str!("../../../schemas/result-v3.schema.json")).unwrap();
+        serde_json::from_str(include_str!("../../../schemas/result.schema.json")).unwrap();
     let validator = validator_for(&schema).unwrap();
-    let submission = json!({"schema_version":3,"id":"marker","title":"Marker","mode":"advisory","severity":"info",
+    let submission = json!({"schema_version":1,"id":"marker","title":"Marker","mode":"advisory","severity":"info",
         "scope":{"include":["**/*.txt"]},"patterns":{"word":"bad"},
         "diagnostics":{"hit":{"kind":"review","message":"Inspect marker","help":"Inspect context"}},
         "documentation":{"source":"# Intended constraint\nReview marker."},
-        "code":{"language":"wt-rule-1","capabilities":["regex.v1"],"source":"for m in rx::find_all(file, \"word\") { emit(m.span, \"hit\"); }"}});
+        "code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"for m in rx::find_all(file, \"word\") { emit(m.span, \"hit\"); }"}});
     let created = run(root.path(), &["new", "--stdin"], Some(&submission));
     assert!(validator.is_valid(&created), "{created}");
     assert_eq!(created["data"]["qualified_id"], "local/marker");
@@ -401,13 +368,12 @@ fn default_protocol_is_compact_and_full_is_explicit() {
         .contains(&json!("owner_file_changed")));
     let capabilities = run(root.path(), &["capabilities"], None);
     assert_eq!(capabilities["schema_version"], 1);
-    assert_eq!(capabilities["schemas"]["result"], json!([2, 3]));
+    assert_eq!(capabilities["schemas"]["result"], json!([1]));
     let capability_schema: Value =
         serde_json::from_str(include_str!("../../../schemas/capabilities.schema.json")).unwrap();
     assert!(validator_for(&capability_schema)
         .unwrap()
         .is_valid(&capabilities));
-    assert_eq!(capabilities["specification_profile"]["target_revision"], 3);
     assert!(capabilities["build"]["commit"].as_str().is_some());
     let guide = run(root.path(), &["guide", "author"], None);
     assert_eq!(
@@ -440,7 +406,7 @@ fn default_protocol_is_compact_and_full_is_explicit() {
     .unwrap();
     assert_eq!(
         submission_schema["properties"]["schema_version"]["const"],
-        3
+        1
     );
     assert!(validator_for(&submission_schema)
         .unwrap()
@@ -483,13 +449,13 @@ fn default_protocol_is_compact_and_full_is_explicit() {
 }
 
 #[test]
-fn candidate_preview_is_isolated_and_legacy_projection_rejects_coverage_policy() {
+fn candidate_preview_is_isolated_and_reports_coverage_policy() {
     let root = tempdir().unwrap();
-    let candidate = json!({"schema_version":3,"id":"draft","title":"Draft","mode":"advisory","severity":"info",
+    let candidate = json!({"schema_version":1,"id":"draft","title":"Draft","mode":"advisory","severity":"info",
         "scope":{"include":["**/*.txt"]},"patterns":{"word":"bad"},
         "diagnostics":{"hit":{"kind":"review","message":"Inspect marker","help":"Inspect context"}},
         "documentation":{"source":"# Draft\nReview marker."},
-        "code":{"language":"wt-rule-1","capabilities":["regex.v1"],"source":"for m in rx::find_all(file, \"word\") { emit(m.span, \"hit\"); }"}});
+        "code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"for m in rx::find_all(file, \"word\") { emit(m.span, \"hit\"); }"}});
     let input = root.path().join("draft.json");
     fs::write(&input, candidate.to_string()).unwrap();
     fs::write(root.path().join("note.txt"), "bad").unwrap();
@@ -522,23 +488,9 @@ fn candidate_preview_is_isolated_and_legacy_projection_rejects_coverage_policy()
         still_isolated["diagnostics"][0]["rule_id"], "candidate/draft",
         "{still_isolated}"
     );
-    let legacy = run(
-        root.path(),
-        &[
-            "check",
-            "--submission",
-            input.to_str().unwrap(),
-            "--no-global",
-            "--output-version",
-            "2",
-        ],
-        None,
-    );
-    assert_eq!(legacy["exit_code"], 2, "{legacy}");
-    assert!(legacy["error"].as_str().unwrap().contains("protocol 2"));
 
     fs::create_dir_all(root.path().join(".wt")).unwrap();
-    fs::write(root.path().join(".wt/config.json"), json!({"schema_version":3,"coverage":{"expectations":[{"rule_id":"local/draft","minimum_files":1,"reason":"Required"}]}}).to_string()).unwrap();
+    fs::write(root.path().join(".wt/config.json"), json!({"schema_version":1,"coverage":{"expectations":[{"rule_id":"local/draft","minimum_files":1,"reason":"Required"}]}}).to_string()).unwrap();
     let with_policy = run(
         root.path(),
         &[
@@ -553,17 +505,4 @@ fn candidate_preview_is_isolated_and_legacy_projection_rejects_coverage_policy()
         with_policy["coverage_expectations"][0]["status"], "not_evaluated_partial",
         "{with_policy}"
     );
-    let legacy_policy = run(
-        root.path(),
-        &[
-            "check",
-            "--submission",
-            input.to_str().unwrap(),
-            "--no-global",
-            "--output-version",
-            "2",
-        ],
-        None,
-    );
-    assert_eq!(legacy_policy["exit_code"], 2);
 }

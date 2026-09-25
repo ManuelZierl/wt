@@ -71,8 +71,6 @@ pub struct Cli {
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Common {
-    #[arg(long, global = true, value_name = "N", default_value_t = 3)]
-    pub output_version: u64,
     #[arg(long, global = true, value_name = "PATH")]
     pub root: Option<PathBuf>,
     #[arg(long = "global-dir", global = true, value_name = "PATH")]
@@ -283,8 +281,6 @@ pub enum Command {
     Schema {
         #[arg(value_enum, value_name = "NAME")]
         name: SchemaName,
-        #[arg(long, value_name = "N")]
-        schema_version: Option<u64>,
     },
     /// Manage derived caches; review records are never cache entries.
     Cache {
@@ -314,13 +310,7 @@ where
                 )
             {
                 let command = command_name(&args);
-                let version = args
-                    .windows(2)
-                    .find(|pair| pair[0] == "--output-version")
-                    .and_then(|pair| pair[1].to_str())
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(3);
-                print_json(&command_error(&command, error.to_string(), version));
+                print_json(&command_error(&command, error.to_string()));
                 2
             } else {
                 let code = if matches!(
@@ -348,12 +338,8 @@ fn execute(cli: Cli) -> i32 {
         } => (*show_reviewed, *show_suppressed),
         _ => (false, false),
     };
-    if let Command::Schema {
-        name,
-        schema_version,
-    } = &cli.command
-    {
-        return print_bundled_schema(name, *schema_version);
+    if let Command::Schema { name } = &cli.command {
+        return print_bundled_schema(name);
     }
     let options = match options(&cli) {
         Ok(options) => options,
@@ -362,7 +348,6 @@ fn execute(cli: Cli) -> i32 {
                 &cli.common.format,
                 &cli.common.color,
                 &command,
-                cli.common.output_version,
                 display,
                 Err(error),
             );
@@ -375,31 +360,14 @@ fn execute(cli: Cli) -> i32 {
         &cli.common.format,
         &cli.common.color,
         &command,
-        cli.common.output_version,
         display,
         result,
     )
 }
 
-fn print_bundled_schema(name: &SchemaName, version: Option<u64>) -> i32 {
-    if let Some(version) = version {
-        let supported = match name {
-            SchemaName::Result | SchemaName::Config | SchemaName::Rule | SchemaName::Submission => {
-                matches!(version, 2 | 3)
-            }
-            SchemaName::Review | SchemaName::Capabilities => version == 1,
-            SchemaName::Tests | SchemaName::Waivers | SchemaName::Plan => version == 2,
-        };
-        if !supported {
-            eprintln!(
-                "unsupported schema version {version} for {}",
-                schema_string(name)
-            );
-            return 2;
-        }
-    }
+fn print_bundled_schema(name: &SchemaName) -> i32 {
     if matches!(name, SchemaName::Rule | SchemaName::Submission) {
-        let schema = wt_core::package_schema(schema_string(name), version.unwrap_or(3));
+        let schema = wt_core::package_schema(schema_string(name), 1);
         return match schema {
             Ok(schema) => {
                 print_json(&schema);
@@ -415,13 +383,7 @@ fn print_bundled_schema(name: &SchemaName, version: Option<u64>) -> i32 {
         SchemaName::Rule => include_str!("../../../schemas/rule.schema.json"),
         SchemaName::Submission => include_str!("../../../schemas/submission.schema.json"),
         SchemaName::Tests => include_str!("../../../schemas/tests.schema.json"),
-        SchemaName::Config if version == Some(2) => {
-            include_str!("../../../schemas/config-v2.schema.json")
-        }
         SchemaName::Config => include_str!("../../../schemas/config.schema.json"),
-        SchemaName::Result if version != Some(2) => {
-            include_str!("../../../schemas/result-v3.schema.json")
-        }
         SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
         SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
         SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
@@ -677,14 +639,8 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             insert_if_true(&mut object, "include_ignored", *include_ignored);
             insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
         }
-        Command::Schema {
-            name,
-            schema_version,
-        } => {
+        Command::Schema { name } => {
             object.insert("schema".to_owned(), json!(schema_string(name)));
-            if let Some(version) = schema_version {
-                object.insert("schema_version".to_owned(), json!(version));
-            }
         }
         Command::Cache { command } => match command {
             CacheCommand::Clear => {}
@@ -695,7 +651,6 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
 
 fn common_options(common: &Common) -> Map<String, Value> {
     let mut object = Map::new();
-    object.insert("output_version".to_owned(), json!(common.output_version));
     if let Some(root) = &common.root {
         object.insert("root".to_owned(), json!(root));
     }
@@ -761,13 +716,12 @@ fn finish(
     format: &OutputFormat,
     color: &ColorMode,
     command: &str,
-    version: u64,
     display: (bool, bool),
     result: anyhow::Result<Value>,
 ) -> i32 {
     let value = match result {
         Ok(value) => value,
-        Err(error) => command_error(command, error.to_string(), version),
+        Err(error) => command_error(command, error.to_string()),
     };
     let exit_code = value
         .get("exit_code")
@@ -781,12 +735,9 @@ fn finish(
     exit_code
 }
 
-fn command_error(command: &str, error: String, version: u64) -> Value {
-    if version == 2 {
-        return json!({"schema_version":2,"command":command,"status":"error","exit_code":2,"error":error});
-    }
+fn command_error(command: &str, error: String) -> Value {
     json!({
-        "schema_version": 3,
+        "schema_version": 1,
         "command": command,
         "status": "error",
         "exit_code": 2,
@@ -895,14 +846,6 @@ fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
                     finding["start_line"],
                     finding["rule_id"].as_str().unwrap_or("<unknown>")
                 );
-            }
-        }
-        if value["schema_version"] == 2 {
-            if let Some(records) = value.get("reviewed").and_then(Value::as_array) {
-                println!(
-                "{} occurrence(s) covered by current explicit review decisions (retained in JSON).",
-                records.len()
-            );
             }
         }
         let summary = &value["summary"];

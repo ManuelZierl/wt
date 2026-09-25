@@ -4,21 +4,19 @@ use wt_core::{digest_package, dispatch};
 
 fn submission(id: &str, mode: &str, scope: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": id,
         "title": id,
-        "description": "package contract test",
-        "rationale": "package contract test",
+        "documentation": {"source": "# Package contract test\n\nPackage contract test.\n"},
         "mode": mode,
         "severity": "error",
         "execution": "file",
         "scope": scope,
         "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [],
         "code": {
             "language": "wt-rule-1",
-            "capabilities": ["regex.v1"],
+            "capabilities": ["text.v1"],
             "source": "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }"
         }
     })
@@ -35,9 +33,10 @@ fn disk_package(
     fs::create_dir_all(directory.join("fixtures")).unwrap();
     manifest["code"] = serde_json::json!({
         "language": "wt-rule-1",
-        "capabilities": ["regex.v1"],
+        "capabilities": ["text.v1"],
         "file": "check.wt"
     });
+    manifest["documentation"] = serde_json::json!({"file": "rule.md"});
     fs::write(
         directory.join("rule.json"),
         serde_json::to_vec(&manifest).unwrap(),
@@ -46,6 +45,11 @@ fn disk_package(
     fs::write(
         directory.join("check.wt"),
         "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }",
+    )
+    .unwrap();
+    fs::write(
+        directory.join("rule.md"),
+        "# Package contract test\n\nPackage contract test.\n",
     )
     .unwrap();
     if let Some(tests) = tests {
@@ -73,21 +77,18 @@ fn show(root: &std::path::Path, id: &str) -> serde_json::Value {
 fn explicit_tests_file_is_authoritative_and_export_resolves_fixtures() {
     let root = tempdir().unwrap();
     let manifest = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": "roundtrip",
         "title": "roundtrip",
-        "description": "test",
-        "rationale": "test",
         "mode": "advisory",
         "severity": "error",
         "execution": "file",
         "scope": {"include": ["**/*.txt"]},
         "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [],
         "tests_file": "suite.json"
     });
-    let tests = r#"{"schema_version":2,"cases":[{"name":"fixture","files":[{"path":"src/input.txt","fixture":"fixtures/input.txt"}],"expect":[{"path":"src/input.txt","code":"hit","kind":"violation"}]}]}"#;
+    let tests = r#"{"schema_version":1,"cases":[{"name":"fixture","files":[{"path":"src/input.txt","fixture":"fixtures/input.txt"}],"expect":[{"path":"src/input.txt","code":"hit","kind":"violation"}]}]}"#;
     let directory = disk_package(
         root.path(),
         "roundtrip",
@@ -100,7 +101,7 @@ fn explicit_tests_file_is_authoritative_and_export_resolves_fixtures() {
 
     let exported = show(root.path(), "roundtrip");
     assert_eq!(exported["exit_code"], 0, "{exported}");
-    let rule = &exported["rule"];
+    let rule = &exported["data"]["rule"];
     assert!(rule.get("tests_file").is_none());
     assert!(rule["code"].get("file").is_none());
     assert_eq!(rule["tests"]["cases"][0]["files"][0]["content"], "bad");
@@ -120,14 +121,14 @@ fn explicit_tests_file_is_authoritative_and_export_resolves_fixtures() {
 fn package_digest_changes_when_a_referenced_fixture_changes() {
     let root = tempdir().unwrap();
     let manifest = serde_json::json!({
-        "schema_version": 2, "id": "digest-fixture", "title": "test",
-        "description": "test", "rationale": "test", "severity": "error",
+        "schema_version": 1, "id": "digest-fixture", "title": "test",
+        "severity": "error",
         "execution": "file", "scope": {"include": ["**/*.txt"]},
         "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [], "tests_file": "tests.json"
+        "tests_file": "tests.json"
     });
-    let tests = r#"{"schema_version":2,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/a.txt"}],"expect":[] }]}"#;
+    let tests = r#"{"schema_version":1,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/a.txt"}],"expect":[] }]}"#;
     let directory = disk_package(
         root.path(),
         "digest-fixture",
@@ -163,18 +164,18 @@ fn intermediate_symlink_escape_is_rejected_before_fixture_read() {
     let outside = tempdir().unwrap();
     fs::write(outside.path().join("input.txt"), b"bad").unwrap();
     let manifest = serde_json::json!({
-        "schema_version": 2, "id": "escape", "title": "test", "description": "test",
-        "rationale": "test", "severity": "error", "execution": "file",
+        "schema_version": 1, "id": "escape", "title": "test",
+        "severity": "error", "execution": "file",
         "scope": {"include": ["**/*.txt"]}, "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [], "tests_file": "tests.json"
+        "tests_file": "tests.json"
     });
     let directory = disk_package(
         root.path(),
         "escape",
         manifest,
         Some(
-            r#"{"schema_version":2,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/input.txt"}],"expect":[]}]}"#,
+            r#"{"schema_version":1,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/input.txt"}],"expect":[]}]}"#,
         ),
         None,
     );
@@ -189,18 +190,18 @@ fn intermediate_symlink_escape_is_rejected_before_fixture_read() {
 fn oversized_fixture_is_bounded() {
     let root = tempdir().unwrap();
     let manifest = serde_json::json!({
-        "schema_version": 2, "id": "large-fixture", "title": "test", "description": "test",
-        "rationale": "test", "severity": "error", "execution": "file",
+        "schema_version": 1, "id": "large-fixture", "title": "test",
+        "severity": "error", "execution": "file",
         "scope": {"include": ["**/*.txt"]}, "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [], "tests_file": "tests.json"
+        "tests_file": "tests.json"
     });
     let directory = disk_package(
         root.path(),
         "large-fixture",
         manifest,
         Some(
-            r#"{"schema_version":2,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/a.txt"}],"expect":[]}]}"#,
+            r#"{"schema_version":1,"cases":[{"name":"case","files":[{"path":"a.txt","fixture":"fixtures/a.txt"}],"expect":[]}]}"#,
         ),
         Some(("fixtures/a.txt", &vec![b'x'; 4 * 1024 * 1024 + 1])),
     );
@@ -230,7 +231,7 @@ fn globs_reject_traversal_and_do_not_cross_components() {
         serde_json::json!({"include": ["*.txt"]}),
     );
     valid["tests"] = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "cases": [
             {"name": "root", "files": [{"path": "a.txt", "content": "bad"}], "expect": [{"path": "a.txt", "code": "hit", "kind": "violation"}]},
             {"name": "nested", "files": [{"path": "nested/a.txt", "content": "bad"}], "expect": []}
@@ -259,7 +260,7 @@ fn enforced_examples_must_be_applicable_and_nonempty() {
         serde_json::json!({"include": ["src/**"], "exclude": [{"glob": "src/generated/**", "reason": "generated"}]}),
     );
     rule["tests"] = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "cases": [
             {"name": "positive-excluded", "files": [{"path": "src/generated/a.txt", "content": "bad"}], "expect": [{"path": "src/generated/a.txt", "code": "hit", "kind": "violation"}]},
             {"name": "negative-empty", "files": [{"path": "src/generated/b.txt", "content": ""}], "expect": []}
@@ -304,7 +305,7 @@ fn submissions_reject_package_fixture_references() {
         serde_json::json!({"include": ["**/*.txt"]}),
     );
     rule["tests"] = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "cases": [{"name": "reference", "files": [{"path": "a.txt", "fixture": "fixtures/a.txt"}], "expect": []}]
     });
     let result = dispatch(

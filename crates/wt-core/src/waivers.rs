@@ -45,8 +45,8 @@ pub fn load(path: &Path) -> Result<Option<WaiverFile>> {
     }
     let value = parse_json(std::str::from_utf8(&bytes)?)?;
     let file: WaiverFile = serde_json::from_value(value).context("invalid waivers")?;
-    if file.schema_version != 2 {
-        bail!("waivers schema_version must be 2")
+    if file.schema_version != crate::CONTRACT_VERSION {
+        bail!("waivers schema_version must be {}", crate::CONTRACT_VERSION)
     }
     let mut ids = std::collections::HashSet::new();
     for waiver in &file.waivers {

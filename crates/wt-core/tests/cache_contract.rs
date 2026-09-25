@@ -14,6 +14,8 @@ mod formatting;
 #[path = "../src/rule.rs"]
 mod rule;
 
+const CONTRACT_VERSION: u64 = 1;
+
 use anyhow::Result;
 use cache::{
     clear_at_directory, fixture_key_with_limits, raw_key_with_limits, repo_raw_key_with_limits,
@@ -55,12 +57,13 @@ fn package(directory: &Path, include: &str) -> RulePackage {
         },
     );
     let manifest = Manifest {
-        documentation: None,
-        schema_version: 2,
+        documentation: rule::Documentation {
+            file: Some("rule.md".to_owned()),
+            source: None,
+        },
+        schema_version: CONTRACT_VERSION,
         id: "cache-rule".to_owned(),
         title: "cache".to_owned(),
-        description: "cache".to_owned(),
-        rationale: "cache".to_owned(),
         mode: "advisory".to_owned(),
         severity: "warning".to_owned(),
         execution: "file".to_owned(),
@@ -74,10 +77,9 @@ fn package(directory: &Path, include: &str) -> RulePackage {
         },
         patterns: BTreeMap::new(),
         diagnostics,
-        limitations: Vec::new(),
         code: Code {
             language: "wt-rule-1".to_owned(),
-            capabilities: vec!["regex.v1".to_owned()],
+            capabilities: vec!["text.v1".to_owned()],
             file: Some("check.wt".to_owned()),
             source: None,
         },
@@ -91,7 +93,7 @@ fn package(directory: &Path, include: &str) -> RulePackage {
         manifest_value: serde_json::to_value(&manifest).unwrap(),
         source: "emit(file.span, \"hit\");".to_owned(),
         tests: Some(TestSuite {
-            schema_version: 2,
+            schema_version: CONTRACT_VERSION,
             cases: vec![TestCase {
                 name: "fixture".to_owned(),
                 files: vec![FixtureFile {

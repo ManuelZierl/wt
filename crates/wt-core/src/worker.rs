@@ -804,7 +804,7 @@ mod tests {
                     "execution": "file",
                     "patterns": {alias.clone(): "same"},
                     "diagnostics": {"hit": {"kind": "violation"}},
-                    "code": {"language": "wt-rule-1", "capabilities": ["regex.v1"]}
+                    "code": {"language": "wt-rule-1", "capabilities": ["text.v1"]}
                 }),
                 source: format!("rx::is_match(file, \"{alias}\");"),
             };

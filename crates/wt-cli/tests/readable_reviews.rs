@@ -9,7 +9,6 @@ fn run(root: &Path, global: &Path, args: &[&str], input: Option<&Value>) -> Valu
     let mut command = Command::new(env!("CARGO_BIN_EXE_wt"));
     command
         .args(args)
-        .args(["--output-version", "2"])
         .args(if args.contains(&"check") {
             &["--detail", "full"][..]
         } else {
@@ -54,11 +53,11 @@ fn run(root: &Path, global: &Path, args: &[&str], input: Option<&Value>) -> Valu
 fn cli_formats_markdown_packages_and_records_review_without_weakening_rule() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
-    let submission = json!({"schema_version":3,"id":"review-marker","title":"Review marker", "severity":"warning","mode":"enforced",
+    let submission = json!({"schema_version":1,"id":"review-marker","title":"Review marker", "severity":"warning","mode":"enforced",
     "documentation":{"source":"# Review marker\n\nThis is a review trigger, not a proven bug.\n"},
     "scope":{"include":["**/*.txt"]},"diagnostics":{"hit":{"kind":"review","message":"Review this marker","help":"Inspect its context"}},
     "code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"if file.text.contains(\"bad\") { emit(file.span, \"hit\"); }"},
-    "tests":{"schema_version":2,"cases":[
+    "tests":{"schema_version":1,"cases":[
         {"name":"positive","files":[{"path":"a.txt","content":"bad"}],"expect":[{"path":"a.txt","code":"hit","kind":"review"}]},
         {"name":"negative","files":[{"path":"a.txt","content":"good"}],"expect":[]}
     ]}});
@@ -100,7 +99,7 @@ fn cli_formats_markdown_packages_and_records_review_without_weakening_rule() {
     );
     assert_eq!(accepted["exit_code"], 0, "{accepted}");
     let record: Value = serde_json::from_slice(
-        &std::fs::read(Path::new(accepted["path"].as_str().unwrap()).join("decision.json"))
+        &std::fs::read(Path::new(accepted["data"]["path"].as_str().unwrap()).join("decision.json"))
             .unwrap(),
     )
     .unwrap();
@@ -122,7 +121,7 @@ fn cli_formats_markdown_packages_and_records_review_without_weakening_rule() {
         &["show", "local/review-marker"],
         None,
     );
-    assert!(shown["rule"]["documentation"]["source"].is_string());
+    assert!(shown["data"]["rule"]["documentation"]["source"].is_string());
     let formatted = root.path().join(".wt/rules/review-marker/check.wt");
     std::fs::write(
         &formatted,
@@ -147,7 +146,7 @@ fn cli_formats_markdown_packages_and_records_review_without_weakening_rule() {
         1
     );
     assert_eq!(
-        run(root.path(), global.path(), &["reviews"], None)["reviews"][0]["validity"],
+        run(root.path(), global.path(), &["reviews"], None)["data"]["reviews"][0]["validity"],
         "not_evaluated"
     );
 }

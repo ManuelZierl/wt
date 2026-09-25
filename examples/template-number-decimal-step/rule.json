@@ -1,9 +1,8 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "id": "template-number-decimal-step",
   "title": "Decimal template inputs use decimal-compatible steps",
-  "description": "Checks the verified template-number rendering context for an unintended integer step restriction.",
-  "rationale": "HTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.",
+  "documentation": {"file": "rule.md"},
   "mode": "advisory",
   "severity": "error",
   "execution": "file",
@@ -23,12 +22,7 @@
       "help": "Review the input manually or make the step expression explicit."
     }
   },
-  "limitations": [
-    "Scoped to the two verified template-number rendering modules represented by the retained examples.",
-    "Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.",
-    "Spreads, duplicate relevant attributes, and unrecognized step expressions remain review findings."
-  ],
   "code": {"language": "wt-rule-1", "capabilities": ["text.v1", "jsx.v1"], "file": "check.wt"},
   "tests_file": "tests.json",
-  "metadata": {"source": "spec.md section 12", "legacy_capabilities": ["regex.v1"]}
+  "metadata": {"source": "watchtower-spec-v3.md section 12"}
 }

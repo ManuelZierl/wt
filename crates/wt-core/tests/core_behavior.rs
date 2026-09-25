@@ -5,19 +5,17 @@ use wt_core::{digest_bytes, dispatch};
 
 fn submission(id: &str, code: &str) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": id,
         "title": id,
-        "description": "test rule",
-        "rationale": "test rationale",
+        "documentation": {"source": "# Test rule\n\n## Description\n\ntest rule\n\n## Rationale\n\ntest rationale\n"},
         "mode": "advisory",
         "severity": "warning",
         "execution": "file",
         "scope": {"include": ["**/*.txt"]},
         "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [],
-        "code": {"language": "wt-rule-1", "capabilities": ["regex.v1"], "source": code}
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": code}
     })
 }
 
@@ -51,7 +49,7 @@ fn check(
     global: &std::path::Path,
     extra: serde_json::Value,
 ) -> serde_json::Value {
-    let mut options = serde_json::json!({"root": root, "global_dir": global, "no_global": true});
+    let mut options = serde_json::json!({"root": root, "global_dir": global, "no_global": true, "detail": "full"});
     for (key, value) in extra.as_object().unwrap() {
         options[key] = value.clone();
     }
@@ -161,7 +159,7 @@ fn scope_excludes_unrelated_gaps_and_waivers_rerender() {
     assert_eq!(result["summary"]["analysis_gaps"], 0);
 
     fs::write(root.path().join("src/a.txt"), "bad").unwrap();
-    let waiver = serde_json::json!({"schema_version": 2, "waivers": [{
+    let waiver = serde_json::json!({"schema_version": 1, "waivers": [{
         "id": "w1", "rule_id": "local/scoped", "code": "hit", "path": "src/a.txt",
         "matched_text_digest": digest_bytes(b"bad"), "reason": "known test exception"
     }]});
@@ -215,8 +213,8 @@ fn update_requires_current_digest_and_preserves_old_package_on_stale_hash() {
     )
     .unwrap();
     assert_eq!(shown["exit_code"], 0);
-    assert_eq!(shown["rule"]["code"]["source"], stored);
-    assert!(created["digest"].as_str().is_some());
+    assert_eq!(shown["data"]["rule"]["code"]["source"], stored);
+    assert!(created["data"]["digest"].as_str().is_some());
 }
 
 #[test]
@@ -261,7 +259,7 @@ fn raw_cache_is_per_rule_and_fixture_cache_is_digest_gated() {
     let mut tested = submission("cache-tests", code);
     let fixture_prefix = root.path().display().to_string();
     tested["tests"] = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "cases": [
             {"name": "bad", "files": [{"path": "a.txt", "content": format!("bad-{fixture_prefix}")}], "expect": [{"path": "a.txt", "code": "hit", "kind": "violation"}]},
             {"name": "good", "files": [{"path": "a.txt", "content": format!("ok-{fixture_prefix}")}], "expect": []}
@@ -293,7 +291,7 @@ fn raw_cache_is_per_rule_and_fixture_cache_is_digest_gated() {
         "update",
         &serde_json::json!({
             "root": root.path(), "global_dir": global.path(), "id": "local/cache-tests",
-            "expect_hash": created["digest"], "submission": tested
+            "expect_hash": created["data"]["digest"], "submission": tested
         }),
     )
     .unwrap();

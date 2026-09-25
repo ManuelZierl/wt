@@ -11,11 +11,12 @@ fn create_and_check_rule() {
     assert_eq!(dispatch("init", &options).unwrap()["exit_code"], 0);
     fs::write(root.path().join("source.txt"), "bad").unwrap();
     let mut submission = serde_json::json!({
-        "schema_version": 2, "id": "bad-text", "title": "Bad text", "description": "finds bad text",
-        "rationale": "test", "mode": "enforced", "severity": "error", "execution": "file",
+        "schema_version": 1, "id": "bad-text", "title": "Bad text",
+        "documentation": {"source": "# Bad text\n\nFinds bad text.\n"},
+        "mode": "enforced", "severity": "error", "execution": "file",
         "scope": {"include": ["**/*.txt"]}, "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [], "code": {"language": "wt-rule-1", "capabilities": ["regex.v1"], "source": "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }"}
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }"}
     });
     submission["mode"] = serde_json::json!("advisory");
     let create = dispatch("new", &serde_json::json!({"root": root.path(), "global_dir": global.path(), "submission": submission})).unwrap();

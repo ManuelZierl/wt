@@ -885,7 +885,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
     for capability in &capabilities {
         if !matches!(
             capability.as_str(),
-            "text.v1" | "regex.v1" | "path.v1" | "jsx.v1" | "repo.v1"
+            "text.v1" | "path.v1" | "jsx.v1" | "repo.v1"
         ) {
             bail!("WT104 unknown capability {capability}");
         }
@@ -1905,12 +1905,12 @@ impl Validator<'_> {
                 self.require_any_capability(&["text.v1", "path.v1"], "path APIs")?
             }
             Ty::File if matches!(property, "text" | "span") => self.require_text_surface()?,
-            Ty::Match => self.require_any_capability(&["text.v1", "regex.v1"], "match APIs")?,
+            Ty::Match => self.require_capability("text.v1", "match APIs")?,
             Ty::Input => self.require_capability("jsx.v1", "jsx APIs")?,
             Ty::Line => self.require_text_surface()?,
             Ty::Attr => self.require_capability("jsx.v1", "JSX attribute APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "regex.v1", "path.v1", "repo.v1", "jsx.v1"],
+                &["text.v1", "path.v1", "repo.v1", "jsx.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -1947,10 +1947,10 @@ impl Validator<'_> {
         match &receiver {
             Ty::Text => self.require_text_surface()?,
             Ty::Input => self.require_capability("jsx.v1", "JSX APIs")?,
-            Ty::Match => self.require_any_capability(&["text.v1", "regex.v1"], "match APIs")?,
+            Ty::Match => self.require_capability("text.v1", "match APIs")?,
             Ty::Repo => self.require_any_capability(&["text.v1", "repo.v1"], "repository APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "regex.v1", "path.v1", "repo.v1", "jsx.v1"],
+                &["text.v1", "path.v1", "repo.v1", "jsx.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -2118,22 +2118,22 @@ impl Validator<'_> {
                 Ok(Ty::Bool)
             }
             ("rx", "is_match") if args.len() == 2 && args[0] == Ty::File => {
-                self.require_any_capability(&["text.v1", "regex.v1"], "regex APIs")?;
+                self.require_capability("text.v1", "regex APIs")?;
                 self.require_static_pattern(call, 1)?;
                 Ok(Ty::Bool)
             }
             ("rx", "find_all") if args.len() == 2 && args[0] == Ty::File => {
-                self.require_any_capability(&["text.v1", "regex.v1"], "regex APIs")?;
+                self.require_capability("text.v1", "regex APIs")?;
                 self.require_static_pattern(call, 1)?;
                 Ok(Ty::Sequence(Box::new(Ty::Match)))
             }
             ("rx", "find_in") if args.len() == 2 && args[0] == Ty::Span => {
-                self.require_any_capability(&["text.v1", "regex.v1"], "regex APIs")?;
+                self.require_capability("text.v1", "regex APIs")?;
                 self.require_static_pattern(call, 1)?;
                 Ok(Ty::Sequence(Box::new(Ty::Match)))
             }
             ("rx", "capture_text") if args.len() == 2 && compatible(&args[1], &Ty::Text) => {
-                self.require_any_capability(&["text.v1", "regex.v1"], "regex APIs")?;
+                self.require_capability("text.v1", "regex APIs")?;
                 self.require_static_pattern(call, 0)?;
                 Ok(Ty::Match.optional())
             }
@@ -3611,7 +3611,7 @@ mod tests {
         let manifest = manifest(
             json!({"call":"request\\([^\\r\\n]*\\)"}),
             json!({"hit":{"kind":"violation"}}),
-            &["regex.v1"],
+            &["text.v1"],
         );
         let program = compile(
             &manifest,
@@ -3644,12 +3644,12 @@ mod tests {
         let first = manifest(
             json!({"call":"request\\([^\\r\\n]*\\)"}),
             json!({"a":{"kind":"violation"}}),
-            &["regex.v1"],
+            &["text.v1"],
         );
         let second = manifest(
             json!({"other":"request\\([^\\r\\n]*\\)"}),
             json!({"b":{"kind":"violation"}}),
-            &["regex.v1"],
+            &["text.v1"],
         );
         let a = compile(
             &first,
@@ -3777,7 +3777,7 @@ mod tests {
                 "decimal-step": {"kind": "violation"},
                 "unverified-step": {"kind": "review"}
             }),
-            &["jsx.v1", "regex.v1"],
+            &["jsx.v1", "text.v1"],
         );
         let source =
             r#"const node = <input type={value . type === "number" ? "number" : "text"} />;"#;
@@ -3911,12 +3911,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_capabilities_authorize_only_their_own_surface() {
+    fn narrow_capabilities_authorize_only_their_own_surface() {
         let diagnostic = json!({"x":{"kind":"violation"}});
-        let regex = manifest(json!({"p":"x"}), diagnostic.clone(), &["regex.v1"]);
-        assert!(compile(&regex, "rx::is_match(file, \"p\");").is_ok());
-        assert!(compile(&regex, "text::contains(file.text, \"x\");").is_err());
-        assert!(compile(&regex, "path::matches(file.path, \"**\");").is_err());
         let path = manifest(json!({}), diagnostic.clone(), &["path.v1"]);
         assert!(compile(&path, "path::matches(file.path, \"**\");").is_ok());
         assert!(compile(&path, "rx::is_match(file, \"missing\");").is_err());
@@ -4238,11 +4234,7 @@ mod tests {
         ));
 
         let program = compile(
-            &manifest(
-                definitions,
-                json!({"x":{"kind":"violation"}}),
-                &["regex.v1"],
-            ),
+            &manifest(definitions, json!({"x":{"kind":"violation"}}), &["text.v1"]),
             "rx::is_match(file, \"left\");",
         )
         .unwrap();

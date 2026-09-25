@@ -33,7 +33,7 @@ impl Repo {
             json!({"hit":{"kind":"review","message":"Review marker","help":"Inspect context"}});
         submission["patterns"] = json!({"bad":"bad"});
         submission["code"] = json!({"language":"wt-rule-1","capabilities":["text.v1"],"source":"for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }"});
-        submission["tests"] = json!({"schema_version":2,"cases":[
+        submission["tests"] = json!({"schema_version":1,"cases":[
             {"name":"positive","files":[{"path":"a.txt","content":"bad"}],"expect":[{"path":"a.txt","code":"hit","kind":"review"}]},
             {"name":"negative","files":[{"path":"a.txt","content":"good"}],"expect":[]}
         ]});
@@ -42,7 +42,7 @@ impl Repo {
         result
     }
     fn check(&self) -> Value {
-        self.run("check", json!({"no_cache":true}))
+        self.run("check", json!({"no_cache":true,"detail":"full"}))
     }
     fn accept(&self, finding: &Value) -> Value {
         self.run("review",json!({"finding_id":finding["finding_id"],
@@ -52,34 +52,35 @@ impl Repo {
 }
 
 #[test]
-fn new_formats_and_migrates_prose_to_one_markdown_authority() {
+fn new_formats_source_and_stores_documentation_as_markdown() {
     let repo = Repo::new();
     let created = repo.install("advisory");
     let package = repo.root.path().join(".wt/rules/review-marker");
     let manifest: Value =
         serde_json::from_slice(&fs::read(package.join("rule.json")).unwrap()).unwrap();
-    assert_eq!(manifest["schema_version"], 3);
+    assert_eq!(manifest["schema_version"], 1);
     assert_eq!(manifest["documentation"]["file"], "rule.md");
     for field in ["description", "rationale", "limitations"] {
         assert!(manifest.get(field).is_none());
     }
-    assert!(fs::read_to_string(package.join("rule.md"))
+    assert!(!fs::read_to_string(package.join("rule.md"))
         .unwrap()
-        .contains("## Limitations"));
+        .trim()
+        .is_empty());
     let source = fs::read_to_string(package.join("check.wt")).unwrap();
     assert!(source.contains("\n    emit("));
     let shown = repo.run("show", json!({"id":"local/review-marker"}));
-    assert_eq!(shown["digest"], created["digest"]);
-    assert!(shown["rule"]["documentation"]["source"].is_string());
-    let exported = shown["rule"].clone();
+    assert_eq!(shown["data"]["digest"], created["data"]["digest"]);
+    assert!(shown["data"]["rule"]["documentation"]["source"].is_string());
+    let exported = shown["data"]["rule"].clone();
     let second = Repo::new();
     assert_eq!(
         second.run("new", json!({"submission":exported}))["exit_code"],
         0
     );
     assert_eq!(
-        second.run("show", json!({"id":"local/review-marker"}))["rule"],
-        shown["rule"]
+        second.run("show", json!({"id":"local/review-marker"}))["data"]["rule"],
+        shown["data"]["rule"]
     );
 }
 
@@ -200,10 +201,7 @@ fn inspect_uses_only_a_digest_verified_local_vcs_object_for_prior_source() {
         "bad\nchanged context\n",
     )
     .unwrap();
-    let inspected = repo.run(
-        "inspect",
-        json!({"finding_id":finding["finding_id"],"output_version":3}),
-    );
+    let inspected = repo.run("inspect", json!({"finding_id":finding["finding_id"]}));
     assert_eq!(inspected["exit_code"], 0, "{inspected}");
     assert_eq!(
         inspected["data"]["previous_content"],
@@ -259,15 +257,17 @@ fn decision_history_is_append_only_and_requires_current_hash() {
     assert_eq!(accepted["exit_code"], 0);
     assert_eq!(repo.accept(&finding)["exit_code"], 2);
     let result=repo.run("review",json!({"finding_id":finding["finding_id"],"expect_evidence":finding["evidence_digest"],
-        "expect_hash":accepted["record_digest"],"decision":"confirmed_issue","rationale":"New evidence confirms the concern."}));
+        "expect_hash":accepted["data"]["record_digest"],"decision":"confirmed_issue","rationale":"New evidence confirms the concern."}));
     assert_eq!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["revision"], 2);
-    assert!(std::path::Path::new(accepted["path"].as_str().unwrap())
-        .join("rationale.md")
-        .is_file());
+    assert_eq!(result["data"]["revision"], 2);
+    assert!(
+        std::path::Path::new(accepted["data"]["path"].as_str().unwrap())
+            .join("rationale.md")
+            .is_file()
+    );
     assert_eq!(repo.check()["exit_code"], 1);
     assert_eq!(
-        repo.run("reviews", json!({}))["reviews"][0]["validity"],
+        repo.run("reviews", json!({}))["data"]["reviews"][0]["validity"],
         "not_evaluated"
     );
 }
@@ -285,7 +285,7 @@ fn missing_findings_are_not_reported_as_fixed_and_corrupt_state_fails_closed() {
     );
     fs::write(repo.root.path().join("source.txt"), "bad\n").unwrap();
     fs::write(
-        std::path::Path::new(accepted["path"].as_str().unwrap()).join("decision.json"),
+        std::path::Path::new(accepted["data"]["path"].as_str().unwrap()).join("decision.json"),
         "{broken",
     )
     .unwrap();
@@ -303,14 +303,15 @@ fn fixture_tests_ignore_accepted_occurrence_state() {
     assert_eq!(repo.accept(&finding)["exit_code"], 0);
     let tested = repo.run("test", json!({"id":"local/review-marker"}));
     assert_eq!(tested["exit_code"], 0);
-    assert_eq!(tested["rules"][0]["cases"], 2);
+    assert_eq!(tested["data"]["rules"][0]["cases"], 2);
 }
 
 #[test]
 fn malformed_or_duplicate_prose_is_rejected_without_mutation() {
     let repo = Repo::new();
     repo.install("advisory");
-    let mut submission = repo.run("show", json!({"id":"local/review-marker"}))["rule"].clone();
+    let mut submission =
+        repo.run("show", json!({"id":"local/review-marker"}))["data"]["rule"].clone();
     submission["id"] = json!("duplicate-prose");
     submission["description"] = json!("duplicate");
     assert_eq!(
@@ -341,12 +342,12 @@ fn repository_review_evidence_includes_additions_to_the_authorized_input_set() {
     let repo = Repo::new();
     repo.install("enforced");
     let shown = repo.run("show", json!({"id":"local/review-marker"}));
-    let mut rule = shown["rule"].clone();
+    let mut rule = shown["data"]["rule"].clone();
     rule["execution"] = json!("repository");
     rule["code"]["source"]=json!("for source_file in repo.files() { for m in rx::find_all(source_file, \"bad\") { emit(m.span, \"hit\"); } }");
     let updated = repo.run(
         "update",
-        json!({"id":"local/review-marker","expect_hash":shown["digest"],"submission":rule}),
+        json!({"id":"local/review-marker","expect_hash":shown["data"]["digest"],"submission":rule}),
     );
     assert_eq!(updated["exit_code"], 0, "{updated}");
     let finding = repo.check()["diagnostics"][0].clone();
@@ -374,7 +375,7 @@ fn unknown_watched_evidence_and_stale_hash_never_create_acceptances() {
         "decision":"acceptable","rationale":"Requires missing evidence.","watch":[format!("missing.txt={}",digest_text("expected"))]}));
     assert_eq!(result["exit_code"], 2);
     assert_eq!(repo.check()["exit_code"], 1);
-    assert!(repo.run("reviews", json!({}))["reviews"]
+    assert!(repo.run("reviews", json!({}))["data"]["reviews"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -398,9 +399,12 @@ fn malformed_watch_option_cannot_create_an_unwatched_acceptance() {
                 "rationale":"Reviewed the helper as supporting evidence.","watch":watch}),
         );
         assert_eq!(result["exit_code"], 2, "{result}");
-        assert!(result["error"].as_str().unwrap().contains("watch"));
+        assert!(result["errors"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("watch"));
     }
-    assert!(repo.run("reviews", json!({}))["reviews"]
+    assert!(repo.run("reviews", json!({}))["data"]["reviews"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -416,14 +420,14 @@ fn modified_earlier_rationale_invalidates_the_current_acceptance() {
     let second = repo.run(
         "review",
         json!({"finding_id":finding["finding_id"],
-        "expect_evidence":finding["evidence_digest"],"expect_hash":first["record_digest"],
+        "expect_evidence":finding["evidence_digest"],"expect_hash":first["data"]["record_digest"],
         "decision":"accepted_risk","rationale":"Reviewed again; risk accepted."}),
     );
     assert_eq!(second["exit_code"], 0, "{second}");
     assert_eq!(repo.check()["exit_code"], 0);
 
     fs::write(
-        std::path::Path::new(first["path"].as_str().unwrap()).join("rationale.md"),
+        std::path::Path::new(first["data"]["path"].as_str().unwrap()).join("rationale.md"),
         "Changed earlier review rationale.",
     )
     .unwrap();
@@ -444,15 +448,15 @@ fn altered_history_links_fail_closed() {
         let second = repo.run(
             "review",
             json!({"finding_id":finding["finding_id"],
-            "expect_evidence":finding["evidence_digest"],"expect_hash":first["record_digest"],
+            "expect_evidence":finding["evidence_digest"],"expect_hash":first["data"]["record_digest"],
             "decision":"acceptable","rationale":"Reviewed a second time."}),
         );
         assert_eq!(second["exit_code"], 0, "{second}");
         let path = std::path::Path::new(
             if break_first {
-                &first["path"]
+                &first["data"]["path"]
             } else {
-                &second["path"]
+                &second["data"]["path"]
             }
             .as_str()
             .unwrap(),

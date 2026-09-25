@@ -195,7 +195,7 @@ fn load_latest(root: &Path, name: &str) -> Result<Option<Stored>> {
 }
 
 fn validate(record: &Record) -> Result<()> {
-    if record.schema_version != 1
+    if record.schema_version != crate::CONTRACT_VERSION
         || record.rationale_file != "rationale.md"
         || record.rule_id.is_empty()
         || record.code.is_empty()
@@ -383,7 +383,7 @@ pub fn list(root: &Path, finding_id: Option<&str>) -> Result<Value> {
         bail!("unknown reviewed finding ID {}", finding_id.unwrap());
     }
     Ok(
-        json!({"schema_version":2,"command":"reviews","status":"pass","exit_code":0,
+        json!({"schema_version":crate::CONTRACT_VERSION,"command":"reviews","status":"pass","exit_code":0,
         "reviews":store.records.iter().filter(|(id,_)| finding_id.is_none_or(|wanted| id.as_str()==wanted)).map(|(_,s)| json!({"record":s.record,
             "record_digest":s.digest,"revision":s.revision,"rationale":s.rationale,
             "validity":"not_evaluated"})).collect::<Vec<_>>() }),
@@ -475,7 +475,7 @@ pub fn record(
         _ => bail!("stale or missing review hash; inspect wt reviews before replacing a decision"),
     }
     let record = Record {
-        schema_version: 1,
+        schema_version: crate::CONTRACT_VERSION,
         finding_id: id.to_owned(),
         evidence_digest: expected.to_owned(),
         decision,
@@ -525,7 +525,7 @@ pub fn record(
     }
     fs::rename(temp.path(), &target)?;
     Ok(
-        json!({"schema_version":2,"command":"review","status":"pass","exit_code":0,
+        json!({"schema_version":crate::CONTRACT_VERSION,"command":"review","status":"pass","exit_code":0,
         "finding_id":id,"record_digest":digest,"revision":revision,"path":target,"decision":record.decision}),
     )
 }

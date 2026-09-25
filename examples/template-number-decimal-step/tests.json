@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "cases": [
     {"name": "missing-step", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/missing-step.tsx"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
     {"name": "fixed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "fixture": "fixtures/fixed-conditional.tsx"}], "expect": []},

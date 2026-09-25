@@ -24,7 +24,7 @@ fn request(source: &str) -> WorkerRequest {
                 "patterns": {"bad": "bad"},
                 "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
                 "limitations": [],
-                "code": {"language": "wt-rule-1", "capabilities": ["regex.v1"]}
+                "code": {"language": "wt-rule-1", "capabilities": ["text.v1"]}
             }),
             source: "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }".to_owned(),
         }],
