@@ -357,7 +357,7 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     if code
         .capabilities
         .iter()
-        .any(|cap| !matches!(cap.as_str(), "text.v1" | "path.v1" | "jsx.v1" | "repo.v1"))
+        .any(|cap| !matches!(cap.as_str(), "text.v1" | "path.v1" | "ast.v1" | "repo.v1"))
     {
         bail!("code.capabilities contains an unknown capability")
     }

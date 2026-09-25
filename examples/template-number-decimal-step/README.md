@@ -10,4 +10,4 @@ wt test local/template-number-decimal-step --root /tmp/wt-demo \
   --global-dir /tmp/wt-global --no-global --format json
 ```
 
-The package uses `check.wt` as its sole executable source and references `tests.json`. It declares `text.v1` and `jsx.v1`. `fixtures/invalid-tsx.tsx` is intentionally outside the ordinary passing suite because an invalid demanded JSX parse is an analysis error, not an expected diagnostic result.
+The package uses `check.wt` as its sole executable source and references `tests.json`. It declares `ast.v1` and matches TSX structurally with `file.ast_match(...)`. `fixtures/invalid-tsx.tsx` is intentionally outside the ordinary passing suite because a demanded parse of invalid TSX is an analysis gap (incomplete, exit 2), not an expected diagnostic result.

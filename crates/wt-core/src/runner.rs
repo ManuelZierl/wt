@@ -1400,7 +1400,7 @@ fn schema(options: &Value) -> Result<Value> {
 
 const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
 const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
-const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and jsx.v1 are explicit capabilities. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
+const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and ast.v1 are explicit capabilities. ast.v1 adds file.ast_match(language, pattern) for structural matches, m.node(\"NAME\") for a captured metavariable, and m.ast_match(language, pattern) to search inside a match; a file with any parse error node is an analysis gap, never a silent no-match. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
 fn guide(options: &Value) -> Result<Value> {
     let topic = options
         .get("topic")
@@ -1426,7 +1426,8 @@ fn capabilities() -> Result<Value> {
         json!({"schema_version":crate::CONTRACT_VERSION,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
         "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_protocol","candidate_preview","configurable_logical_budgets"],
         "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
-        "language":"wt-rule-1", "helpers":["text.v1","jsx.v1"],
+        "language":"wt-rule-1", "helpers":["text.v1","ast.v1"],
+        "ast":{"engine":wt_runtime::AST_ENGINE,"languages":wt_runtime::ast_supported_language_grammars().into_iter().map(|(language,grammar)| json!({"language":language,"grammar":grammar})).collect::<Vec<_>>()},
         "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
         "guide_digests":{
             "author":crate::digest::digest_bytes(AUTHOR_GUIDE.as_bytes()),

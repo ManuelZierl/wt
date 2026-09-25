@@ -30,7 +30,7 @@
       "required": ["language", "capabilities", "file"],
       "properties": {
         "language": {"const": "wt-rule-1"},
-        "capabilities": {"type": "array", "items": {"enum": ["text.v1", "path.v1", "jsx.v1", "repo.v1"]}},
+        "capabilities": {"type": "array", "items": {"enum": ["text.v1", "path.v1", "ast.v1", "repo.v1"]}},
         "file": {"const": "check.wt"}
       }
     },

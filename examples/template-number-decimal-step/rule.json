@@ -7,9 +7,6 @@
   "severity": "error",
   "execution": "file",
   "scope": {"include": ["frontend/src/task-start-page.tsx", "frontend/src/template-pages.tsx"]},
-  "patterns": {
-    "template_number_type": "^(?P<parameter>[A-Za-z_$][A-Za-z0-9_$]*) \\. type === \"number\" \\? \"number\" : \"text\"$"
-  },
   "diagnostics": {
     "decimal-step": {
       "kind": "violation",
@@ -22,7 +19,7 @@
       "help": "Review the input manually or make the step expression explicit."
     }
   },
-  "code": {"language": "wt-rule-1", "capabilities": ["text.v1", "jsx.v1"], "file": "check.wt"},
+  "code": {"language": "wt-rule-1", "capabilities": ["ast.v1"], "file": "check.wt"},
   "tests_file": "tests.json",
   "metadata": {"source": "watchtower-spec-v3.md section 12"}
 }

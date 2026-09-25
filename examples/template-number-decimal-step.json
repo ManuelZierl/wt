@@ -3,42 +3,188 @@
   "id": "template-number-decimal-step",
   "title": "Decimal template inputs use decimal-compatible steps",
   "documentation": {
-    "source": "# Decimal template inputs use decimal-compatible steps\n\n## Description\n\nChecks the verified template-number rendering context for an unintended integer step restriction.\n\n## Rationale\n\nHTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.\n\n## Limitations\n\n- Scoped to the two verified template-number rendering modules represented by the retained examples.\n- Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.\n- Spreads, duplicate relevant attributes, and unrecognized step expressions remain review findings.\n"
+    "source": "# Decimal template inputs use decimal-compatible steps\n\n## Description\n\nChecks the verified template-number rendering context for an unintended integer step restriction.\n\n## Rationale\n\nHTML number inputs default to a step of one; decimal parameters need an explicit decimal-compatible step in this rendering context.\n\n## Limitations\n\n- Scoped to the two verified template-number rendering modules represented by the retained examples.\n- Does not resolve aliases, wrapper components, helper calls, shadowed identifiers, or business types.\n- Unrecognized step expressions remain review findings; missing or integer-only steps are the violation.\n- Uses `ast.v1` structural matching (TSX), so it is naturally insensitive to whitespace, attribute order, and\n  extra attributes, and ignores JSX-looking text inside strings and comments. It does not special-case spread\n  attributes (`{...props}`) or a duplicated `type` attribute; either can make the match miss or pick either\n  occurrence, unlike the earlier `jsx.v1` version of this rule.\n"
   },
   "mode": "advisory",
   "severity": "error",
   "execution": "file",
-  "scope": {"include": ["frontend/src/task-start-page.tsx", "frontend/src/template-pages.tsx"]},
-  "patterns": {"template_number_type": "^(?P<parameter>[A-Za-z_$][A-Za-z0-9_$]*) \\. type === \"number\" \\? \"number\" : \"text\"$"},
+  "scope": {
+    "include": [
+      "frontend/src/task-start-page.tsx",
+      "frontend/src/template-pages.tsx"
+    ]
+  },
   "diagnostics": {
-    "decimal-step": {"kind": "violation", "message": "Template numeric parameters require decimal-compatible input stepping.", "help": "Use step=\"any\" or the documented conditional equivalent."},
-    "unverified-step": {"kind": "review", "message": "The numeric template input has a step expression this detector cannot verify.", "help": "Review the input manually or make the step expression explicit."}
+    "decimal-step": {
+      "kind": "violation",
+      "message": "Template numeric parameters require decimal-compatible input stepping.",
+      "help": "Use step=\"any\" or the documented conditional equivalent."
+    },
+    "unverified-step": {
+      "kind": "review",
+      "message": "The numeric template input has a step expression this detector cannot verify.",
+      "help": "Review the input manually or make the step expression explicit."
+    }
   },
   "code": {
     "language": "wt-rule-1",
-    "capabilities": ["text.v1", "jsx.v1"],
-    "source": "for input in jsx::inputs(file) {\n    let type_attr = input.attr(\"type\");\n    if type_attr == () || type_attr.kind != \"expression\" {\n        continue;\n    }\n    let matched = rx::capture_text(\"template_number_type\", type_attr.canonical);\n    if matched == () {\n        continue;\n    }\n    if input.has_spread || input.duplicate(\"type\") || input.duplicate(\"step\") {\n        emit(input.span, \"unverified-step\");\n        continue;\n    }\n    let parameter = matched.group_text(\"parameter\");\n    let step = input.attr(\"step\");\n    if step == () {\n        emit(input.span, \"decimal-step\");\n        continue;\n    }\n    if step.static_string == \"any\" {\n        continue;\n    }\n    let expected = parameter + \" . type === \\\"number\\\" ? \\\"any\\\" : undefined\";\n    if step.kind == \"expression\" && step.canonical == expected {\n        continue;\n    }\n    if step.static_string == \"1\" || step.canonical == \"1\" {\n        emit(input.span, \"decimal-step\");\n    } else {\n        emit(input.span, \"unverified-step\");\n    }\n}"
+    "capabilities": [
+      "ast.v1"
+    ],
+    "source": "for m in file.ast_match(\n    \"tsx\",\n    \"<input $$$ type={$PARAM . type === \\\"number\\\" ? \\\"number\\\" : \\\"text\\\"} $$$/>\"\n) {\n    if !m.ast_match(\"tsx\", \"<input $$$ step={\\\"any\\\"} $$$/>\").is_empty() {\n        continue;\n    }\n    if !m.ast_match(\"tsx\", \"<input $$$ step=\\\"any\\\" $$$/>\").is_empty() {\n        continue;\n    }\n\n    let parameter = m.node(\"PARAM\").text;\n    let conditional_ok = false;\n    for cond in m.ast_match(\n        \"tsx\",\n        \"<input $$$ step={$P . type === \\\"number\\\" ? \\\"any\\\" : undefined} $$$/>\"\n    ) {\n        if cond.node(\"P\").text == parameter {\n            conditional_ok = true;\n        }\n    }\n    if conditional_ok {\n        continue;\n    }\n\n    let has_step_expr = m.ast_match(\"tsx\", \"<input $$$ step={$ANY} $$$/>\");\n    let has_step_str = m.ast_match(\"tsx\", \"<input $$$ step=\\\"$ANY\\\" $$$/>\");\n    if has_step_expr.is_empty() && has_step_str.is_empty() {\n        emit(m.span, \"decimal-step\");\n        continue;\n    }\n\n    if !m.ast_match(\"tsx\", \"<input $$$ step={\\\"1\\\"} $$$/>\").is_empty()\n        || !m.ast_match(\"tsx\", \"<input $$$ step=\\\"1\\\" $$$/>\").is_empty()\n        || !m.ast_match(\"tsx\", \"<input $$$ step={1} $$$/>\").is_empty() {\n        emit(m.span, \"decimal-step\");\n        continue;\n    }\n\n    emit(m.span, \"unverified-step\");\n}\n"
   },
   "tests": {
     "schema_version": 1,
     "cases": [
-      {"name": "missing-step", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "fixed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={value . type === \"number\" ? \"any\" : undefined} />;\n}"}], "expect": []},
-      {"name": "step-any-quoted", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step=\"any\" />;\n}"}], "expect": []},
-      {"name": "step-any-expression", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={\"any\"} />;\n}"}], "expect": []},
-      {"name": "step-one-quoted", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step=\"1\" />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "step-one-expression", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={1} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "reversed-conditional", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={value . type === \"number\" ? undefined : \"any\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
-      {"name": "helper-derived-step", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value, stepFor }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={stepFor(value)} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
-      {"name": "spread-attributes", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value, props }) {\n  return <input {...props} type={value . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
-      {"name": "duplicate-relevant-attribute", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} type=\"text\" />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "unverified-step", "kind": "review"}]},
-      {"name": "renamed-parameter", "files": [{"path": "frontend/src/template-pages.tsx", "content": "export function TaskStart({ amount }) {\n  return <input type={amount . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/template-pages.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "formatting-and-attribute-order", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ amount }) {\n  return (\n    <input\n      aria-label=\"amount\"\n      type={ amount . type === \"number\" ? \"number\" : \"text\" }\n    />\n  );\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "single-quote-attribute-style", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ amount }) {\n  return <input aria-label='amount' type={amount . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "arrow-before-type", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function TaskStart({ value, onChange }) {\n  return <input onChange={(event) => onChange(event)} type={value . type === \"number\" ? \"number\" : \"text\"} />;\n}"}], "expect": [{"path": "frontend/src/task-start-page.tsx", "code": "decimal-step", "kind": "violation"}]},
-      {"name": "jsx-looking-text-in-string-and-comment", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "const text = \"<input type={value . type === \\\"number\\\" ? \\\"number\\\" : \\\"text\\\"} />\";\n// <input type={value . type === \"number\" ? \"number\" : \"text\"} />\nexport function TaskStart() {\n  return <div>{text}</div>;\n}"}], "expect": []},
-      {"name": "unrelated-retry-count-input", "files": [{"path": "frontend/src/task-start-page.tsx", "content": "export function RetryCount({ retries }) {\n  return <input type=\"number\" value={retries} />;\n}"}], "expect": []}
+      {
+        "name": "missing-step",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} />;\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "code": "decimal-step",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "fixed-conditional",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={value . type === \"number\" ? \"any\" : undefined} />;\n}\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "step-any-quoted",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step=\"any\" />;\n}\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "step-any-expression",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={\"any\"} />;\n}\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "step-one-quoted",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step=\"1\" />;\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "code": "decimal-step",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "step-one-expression",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={1} />;\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "code": "decimal-step",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "reversed-conditional",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ value }) {\n  return <input type={value . type === \"number\" ? \"number\" : \"text\"} step={value . type === \"number\" ? undefined : \"any\"} />;\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "code": "unverified-step",
+            "kind": "review"
+          }
+        ]
+      },
+      {
+        "name": "renamed-parameter",
+        "files": [
+          {
+            "path": "frontend/src/template-pages.tsx",
+            "content": "export function TaskStart({ amount }) {\n  return <input type={amount . type === \"number\" ? \"number\" : \"text\"} />;\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/template-pages.tsx",
+            "code": "decimal-step",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "formatting-and-attribute-order",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function TaskStart({ amount }) {\n  return (\n    <input\n      aria-label=\"amount\"\n      type={ amount . type === \"number\" ? \"number\" : \"text\" }\n    />\n  );\n}\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "code": "decimal-step",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "jsx-looking-text-in-string-and-comment",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "const text = \"<input type={value . type === \\\"number\\\" ? \\\"number\\\" : \\\"text\\\"} />\";\n// <input type={value . type === \"number\" ? \"number\" : \"text\"} />\nexport function TaskStart() {\n  return <div>{text}</div>;\n}\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "unrelated-retry-count-input",
+        "files": [
+          {
+            "path": "frontend/src/task-start-page.tsx",
+            "content": "export function RetryCount({ retries }) {\n  return <input type=\"number\" value={retries} />;\n}\n"
+          }
+        ],
+        "expect": []
+      }
     ]
   },
-  "metadata": {"source": "watchtower-spec-v3.md section 12"}
+  "metadata": {
+    "source": "watchtower-spec-v3.md section 12"
+  }
 }

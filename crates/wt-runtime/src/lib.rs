@@ -16,8 +16,13 @@ use serde_json::{json, Value as JsonValue};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Weak};
-use tree_sitter::Parser;
 
+mod ast_match;
+pub use ast_match::{
+    supported_language_grammars as ast_supported_language_grammars,
+    supported_languages as ast_supported_languages, AST_ENGINE,
+};
+use ast_match::{AstLanguage, AstMatch};
 mod shared_text;
 pub use shared_text::SharedText;
 #[cfg(test)]
@@ -28,7 +33,6 @@ const MAX_SOURCE: usize = 128 * 1024;
 // layout (which shrinks when payloads become shared).
 const LOGICAL_VALUE_BYTES: usize = 104;
 const MAX_FRONTEND_NODES: usize = 1_000_000;
-const MAX_NESTING_DEPTH: usize = 64;
 const MAX_FILE_CEILING: usize = 64 * 1024 * 1024;
 const MAX_STEPS: u64 = 1_000_000;
 const MAX_REPOSITORY_STEPS: u64 = 10_000_000;
@@ -93,7 +97,7 @@ pub struct RawDiagnostic {
     pub end_byte: usize,
 }
 
-const REGEX_ENGINE: &str = "regex-1.12.2-utf8-leftmost-first-nonoverlap";
+const REGEX_ENGINE: &str = "regex-1.12.4-utf8-leftmost-first-nonoverlap";
 
 #[derive(Clone)]
 struct Pattern {
@@ -212,6 +216,9 @@ struct MatchValue {
     end: usize,
     text: SharedText,
     groups: Arc<HashMap<String, Option<SharedText>>>,
+    /// Byte spans of captured metavariables, populated for `ast.v1` matches
+    /// only (regex matches leave this empty). Backs `.node(name)`.
+    node_spans: Arc<HashMap<String, (usize, usize)>>,
     reportable: bool,
 }
 
@@ -225,22 +232,6 @@ struct SpanValue {
 #[derive(Clone)]
 struct FileValue {
     index: usize,
-}
-
-#[derive(Clone)]
-struct AttrValue {
-    kind: String,
-    canonical: SharedText,
-    static_string: Option<SharedText>,
-}
-
-#[derive(Clone)]
-struct InputValue {
-    file: usize,
-    start: usize,
-    end: usize,
-    attrs: Arc<Vec<(String, AttrValue)>>,
-    spread: bool,
 }
 
 #[derive(Clone)]
@@ -260,8 +251,6 @@ enum Value {
     File(FileValue),
     Span(SpanValue),
     Match(MatchValue),
-    Input(InputValue),
-    Attr(AttrValue),
     Line(LineValue),
     Repo,
     Sequence(Vec<Value>),
@@ -281,10 +270,6 @@ enum CaptureResult {
     Complete(Option<MatchValue>),
     Failed(String),
 }
-enum JsxResult {
-    Complete(Vec<InputValue>),
-    Failed(String),
-}
 
 enum TextResult {
     Complete(Value),
@@ -300,12 +285,26 @@ struct DerivedKey {
     flags: PatternFlags,
 }
 
+type AstTreeCache = HashMap<(String, [u8; 32], &'static str), Arc<Result<ast_match::Tree, String>>>;
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct AstQueryKey {
+    path: String,
+    digest: [u8; 32],
+    language: &'static str,
+    pattern: String,
+    start: usize,
+    end: usize,
+    independent_slice: bool,
+}
+
 /// Per-run shared native query storage.
 pub struct QueryArena {
     optimized: bool,
     regex: HashMap<QueryKey, QueryEntry>,
     capture_text: HashMap<DerivedKey, CaptureResult>,
-    jsx: HashMap<DerivedKey, JsxResult>,
+    ast: HashMap<AstQueryKey, QueryEntry>,
+    parsed_trees: AstTreeCache,
     text: HashMap<TextKey, TextResult>,
     stats: ArenaStats,
     retained_bytes: usize,
@@ -335,7 +334,8 @@ impl QueryArena {
             optimized,
             regex: HashMap::new(),
             capture_text: HashMap::new(),
-            jsx: HashMap::new(),
+            ast: HashMap::new(),
+            parsed_trees: HashMap::new(),
             text: HashMap::new(),
             stats: ArenaStats::default(),
             retained_bytes: 0,
@@ -384,7 +384,8 @@ impl QueryArena {
         self.stats.peak_retained_bytes = self.stats.peak_retained_bytes.max(self.retained_bytes);
         self.regex.clear();
         self.capture_text.clear();
-        self.jsx.clear();
+        self.ast.clear();
+        self.parsed_trees.clear();
         self.text.clear();
         self.retained_bytes = self.retained_bytes.saturating_sub(self.text_retained_bytes);
         self.text_retained_bytes = 0;
@@ -552,6 +553,7 @@ impl QueryArena {
                     end: absolute_end,
                     text: file.text.slice(absolute_start..absolute_end),
                     groups: Arc::new(groups),
+                    node_spans: Arc::new(HashMap::new()),
                     reportable: true,
                 });
             }
@@ -723,6 +725,7 @@ impl QueryArena {
                 end: 0,
                 text: text.slice(whole.start()..whole.end()),
                 groups: Arc::new(groups),
+                node_spans: Arc::new(HashMap::new()),
                 reportable: false,
             }))
         })();
@@ -752,70 +755,163 @@ impl QueryArena {
         result
     }
 
-    fn jsx_inputs(
+    /// Parse `file` under `language`, cached per (path, digest, language) for
+    /// the current file-local transaction so repeated/nested `ast_match`
+    /// calls in the same rule do not reparse. Any tree-sitter error node
+    /// turns the parse into an analysis gap (never a silent no-match).
+    fn ast_tree(
+        &mut self,
+        file: &SourceFile,
+        digest: [u8; 32],
+        language: AstLanguage,
+    ) -> Arc<Result<ast_match::Tree, String>> {
+        let key = (file.path.clone(), digest, language.name());
+        if let Some(cached) = self.parsed_trees.get(&key) {
+            return cached.clone();
+        }
+        let built = ast_match::parse_source(language, &file.text).and_then(|tree| {
+            if ast_match::has_parse_error(&tree) {
+                bail!(
+                    "WT201 ast.v1 analysis gap: {:?} contains a parse error node under language {:?}",
+                    file.path,
+                    language.name()
+                );
+            }
+            Ok(tree)
+        });
+        let entry = Arc::new(built.map_err(|error| error.to_string()));
+        self.parsed_trees.insert(key, entry.clone());
+        entry
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ast_match(
         &mut self,
         file_index: usize,
         file: &SourceFile,
+        language: AstLanguage,
+        pattern_key: &str,
+        pattern: &ast_grep_core::Pattern,
+        start: usize,
+        end: usize,
+        independent_slice: bool,
         temporary_bytes: &mut usize,
-    ) -> Result<Vec<InputValue>> {
+    ) -> Result<Vec<MatchValue>> {
         self.stats.logical_requests += 1;
-        let key = DerivedKey {
+        let digest = file.text.digest(&mut self.stats.cache_key_bytes_hashed);
+        let key = AstQueryKey {
             path: file.path.clone(),
-            digest: file.text.digest(&mut self.stats.cache_key_bytes_hashed),
-            operation: "jsx.v1".into(),
-            expression: String::new(),
-            flags: PatternFlags::default(),
+            digest,
+            language: language.name(),
+            pattern: pattern_key.to_owned(),
+            start,
+            end,
+            independent_slice,
         };
         if self.optimized {
-            if let Some(entry) = self.jsx.get(&key) {
+            if let Some(entry) = self.ast.get(&key) {
                 self.stats.shared_result_hits += 1;
-                return match entry {
-                    JsxResult::Complete(values) => {
+                return match &entry.result {
+                    QueryResult::Complete(matches) => {
                         charge_consumer_budget(
                             temporary_bytes,
-                            values.iter().map(input_value_size).sum::<usize>()
-                                + values.len() * LOGICAL_VALUE_BYTES,
+                            matches.iter().map(match_value_size).sum::<usize>()
+                                + matches.len() * LOGICAL_VALUE_BYTES,
                         )?;
-                        Ok(values
+                        Ok(matches
                             .iter()
                             .cloned()
-                            .map(|mut value| {
-                                value.file = file_index;
-                                value
+                            .map(|mut matched| {
+                                matched.file = file_index;
+                                matched
                             })
                             .collect())
                     }
-                    JsxResult::Failed(error) => bail!("{error}"),
+                    QueryResult::Exists(_) => bail!("invalid cached query result shape"),
+                    QueryResult::Failed(error) => bail!("{error}"),
                 };
             }
         }
         self.stats.parser_evaluations += 1;
-        let result = parse_jsx_inputs(
-            file_index,
-            &file.text,
-            MAX_RETAINED_BYTES.saturating_sub(self.retained_bytes),
-        );
-        if let Ok(values) = &result {
+        let tree_entry = self.ast_tree(file, digest, language);
+        let result: Result<Vec<MatchValue>> = (|| {
+            let tree = tree_entry
+                .as_ref()
+                .as_ref()
+                .map_err(|error| anyhow!("{error}"))?;
+            let scope = if independent_slice {
+                Some((start, end))
+            } else {
+                None
+            };
+            let matches = ast_match::find_matches(tree, pattern, scope)?;
+            let mut out = Vec::with_capacity(matches.len());
+            let mut pending_bytes = 0usize;
+            for AstMatch {
+                start,
+                end,
+                captures,
+            } in matches
+            {
+                let mut groups = HashMap::with_capacity(captures.len());
+                let mut node_spans = HashMap::with_capacity(captures.len());
+                let mut capture_bytes = 0usize;
+                for (name, cstart, cend) in captures {
+                    let text = file.text.slice(cstart..cend);
+                    capture_bytes = capture_bytes
+                        .saturating_add(name.len())
+                        .saturating_add(24)
+                        .saturating_add(text.len());
+                    node_spans.insert(name.clone(), (cstart, cend));
+                    groups.insert(name, Some(text));
+                }
+                let match_bytes = end
+                    .saturating_sub(start)
+                    .saturating_add(64)
+                    .saturating_add(capture_bytes);
+                pending_bytes = pending_bytes
+                    .checked_add(match_bytes)
+                    .ok_or_else(|| anyhow!("retained query result size overflow"))?;
+                if self.retained_bytes.saturating_add(pending_bytes) > MAX_RETAINED_BYTES {
+                    bail!("retained query result budget exceeded");
+                }
+                out.push(MatchValue {
+                    file: file_index,
+                    start,
+                    end,
+                    text: file.text.slice(start..end),
+                    groups: Arc::new(groups),
+                    node_spans: Arc::new(node_spans),
+                    reportable: true,
+                });
+            }
+            Ok(out)
+        })();
+        if let Ok(matches) = &result {
             charge_consumer_budget(
                 temporary_bytes,
-                values.iter().map(input_value_size).sum::<usize>()
-                    + values.len() * LOGICAL_VALUE_BYTES,
+                matches.iter().map(match_value_size).sum::<usize>()
+                    + matches.len() * LOGICAL_VALUE_BYTES,
             )?;
         }
         if self.optimized {
             match &result {
-                Ok(values) => {
-                    let bytes = values.iter().map(input_value_size).sum::<usize>();
-                    if self.retained_bytes.saturating_add(bytes) > MAX_RETAINED_BYTES {
-                        let error = "retained query result budget exceeded".to_owned();
-                        self.jsx.insert(key, JsxResult::Failed(error.clone()));
-                        return Err(anyhow!(error));
-                    }
-                    self.retained_bytes += bytes;
-                    self.jsx.insert(key, JsxResult::Complete(values.clone()));
+                Ok(matches) => {
+                    self.retained_bytes += matches.iter().map(match_value_size).sum::<usize>();
+                    self.ast.insert(
+                        key,
+                        QueryEntry {
+                            result: QueryResult::Complete(matches.clone()),
+                        },
+                    );
                 }
                 Err(error) => {
-                    self.jsx.insert(key, JsxResult::Failed(error.to_string()));
+                    self.ast.insert(
+                        key,
+                        QueryEntry {
+                            result: QueryResult::Failed(error.to_string()),
+                        },
+                    );
                 }
             }
         }
@@ -830,6 +926,7 @@ pub struct Program {
     diagnostics: BTreeMap<String, DiagnosticDef>,
     execution: Execution,
     path_globs: HashMap<String, GlobMatcher>,
+    ast_patterns: BTreeMap<(AstLanguage, String), ast_grep_core::Pattern>,
     plan: JsonValue,
     rule_ir: RuleIr,
     compiled_residual_bytes: usize,
@@ -885,7 +982,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
     for capability in &capabilities {
         if !matches!(
             capability.as_str(),
-            "text.v1" | "path.v1" | "jsx.v1" | "repo.v1"
+            "text.v1" | "path.v1" | "ast.v1" | "repo.v1"
         ) {
             bail!("WT104 unknown capability {capability}");
         }
@@ -929,6 +1026,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
         scopes: vec![host_scope],
         globs: HashSet::new(),
         steps: 0,
+        ast_patterns: BTreeMap::new(),
     };
     validator.validate_ast(&ast)?;
     let mut path_globs = HashMap::new();
@@ -940,6 +1038,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
             .compile_matcher();
         path_globs.insert(glob, matcher);
     }
+    let ast_patterns = validator.ast_patterns;
     let (rule_ir, plan) = make_plan(&ast, &patterns, execution);
     Ok(Program {
         ast,
@@ -947,6 +1046,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
         diagnostics,
         execution,
         path_globs,
+        ast_patterns,
         plan,
         rule_ir,
         compiled_residual_bytes: manifest_bytes
@@ -968,11 +1068,16 @@ impl Program {
     /// Return the conservative memory reservation for this compiled program.
     /// Pattern reservations are keyed by expanded semantics, not manifest alias.
     pub fn compiled_reservation(&self) -> (usize, Vec<(String, usize)>) {
-        let keys = self
+        let mut keys = self
             .patterns
             .values()
             .map(|pattern| pattern.canonical_key.clone())
             .collect::<BTreeSet<_>>();
+        keys.extend(
+            self.ast_patterns
+                .keys()
+                .map(|(language, pattern)| format!("ast.v1:{}:{pattern}", language.name())),
+        );
         (
             self.compiled_residual_bytes,
             keys.into_iter()
@@ -1368,7 +1473,6 @@ fn query_template(
             ("rx", "is_match" | "find_all" | "find_in" | "capture_text") => {
                 format!("regex.{}", call.name)
             }
-            ("jsx", "inputs") => "jsx.inputs".into(),
             ("repo", "files") => "repo.files".into(),
             _ => return None,
         };
@@ -1379,7 +1483,8 @@ fn query_template(
         let operation = match call.name.as_str() {
             "contains" | "starts_with" | "ends_with" | "trim" | "split" | "replace"
             | "len_bytes" => format!("text.{}", call.name),
-            "attr" | "duplicate" => format!("jsx.{}", call.name),
+            "ast_match" => "ast.match".into(),
+            "node" => "ast.node".into(),
             "group_text" => "regex.group_text".into(),
             "is_empty" => "sequence.is_empty".into(),
             _ => return None,
@@ -1471,13 +1576,10 @@ fn query_template(
 fn result_shape(operation: &str) -> String {
     match operation {
         "regex.is_match" | "path.matches" | "text.contains" | "text.starts_with"
-        | "text.ends_with" | "text.duplicate" | "jsx.duplicate" | "sequence.is_empty" => {
-            "bool".into()
-        }
-        "regex.find_all" | "regex.find_in" | "text.lines" | "text.split" | "jsx.inputs"
+        | "text.ends_with" | "sequence.is_empty" => "bool".into(),
+        "regex.find_all" | "regex.find_in" | "text.lines" | "text.split" | "ast.match"
         | "repo.files" => "sequence".into(),
-        "regex.capture_text" => "optional<match>".into(),
-        "jsx.attr" => "optional<attr>".into(),
+        "regex.capture_text" | "ast.node" => "optional<match>".into(),
         "regex.group_text" => "optional<text>".into(),
         "text.len_bytes" => "int".into(),
         _ => "text".into(),
@@ -1575,8 +1677,6 @@ enum Ty {
     File,
     Span,
     Match,
-    Input,
-    Attr,
     Line,
     Repo,
     Sequence(Box<Ty>),
@@ -1603,6 +1703,10 @@ struct Validator<'a> {
     scopes: Vec<Scope>,
     globs: HashSet<String>,
     steps: usize,
+    /// `ast.v1` patterns are static-literal arguments compiled eagerly here
+    /// (once per distinct language+pattern), so a malformed pattern is a
+    /// WT100 rule-compile error, never a runtime surprise.
+    ast_patterns: BTreeMap<(AstLanguage, String), ast_grep_core::Pattern>,
 }
 
 impl Validator<'_> {
@@ -1904,13 +2008,13 @@ impl Validator<'_> {
             Ty::File if property == "path" => {
                 self.require_any_capability(&["text.v1", "path.v1"], "path APIs")?
             }
-            Ty::File if matches!(property, "text" | "span") => self.require_text_surface()?,
-            Ty::Match => self.require_capability("text.v1", "match APIs")?,
-            Ty::Input => self.require_capability("jsx.v1", "jsx APIs")?,
+            Ty::File if matches!(property, "text" | "span") => {
+                self.require_any_capability(&["text.v1", "ast.v1"], "file text/span APIs")?
+            }
+            Ty::Match => self.require_any_capability(&["text.v1", "ast.v1"], "match APIs")?,
             Ty::Line => self.require_text_surface()?,
-            Ty::Attr => self.require_capability("jsx.v1", "JSX attribute APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "path.v1", "repo.v1", "jsx.v1"],
+                &["text.v1", "path.v1", "repo.v1", "ast.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -1923,12 +2027,8 @@ impl Validator<'_> {
             (Ty::Match, "span") => Ty::Span,
             (Ty::Sequence(_), "len") => Ty::Int,
             (Ty::Sequence(_), "is_empty") => Ty::Bool,
-            (Ty::Input, "span") => Ty::Span,
-            (Ty::Input, "has_spread") => Ty::Bool,
             (Ty::Line, "text") => Ty::Text,
             (Ty::Line, "span") => Ty::Span,
-            (Ty::Attr, "kind") | (Ty::Attr, "canonical") => Ty::Text,
-            (Ty::Attr, "static_string") => Ty::Text.optional(),
             _ => {
                 return Err(self.error(
                     "WT104",
@@ -1943,14 +2043,41 @@ impl Validator<'_> {
     fn validate_method(&mut self, receiver: &Ty, call: &FnCallExpr) -> Result<Ty> {
         let receiver = receiver.unwrap_optional().clone();
         let name = call.name.as_str();
+        if matches!(
+            (&receiver, name),
+            (Ty::File, "ast_match") | (Ty::Match, "ast_match")
+        ) {
+            let args = self.validate_arguments(call)?;
+            if args.len() != 2 || args[0] != Ty::Text || args[1] != Ty::Text {
+                return Err(self.error(
+                    "WT104",
+                    "ast_match requires (language, pattern) string literals",
+                    call_position(call),
+                ));
+            }
+            self.validate_ast_match_call(call, 0, 1)?;
+            return Ok(Ty::Sequence(Box::new(Ty::Match)));
+        }
+        if matches!((&receiver, name), (Ty::Match, "node")) {
+            let args = self.validate_arguments(call)?;
+            if args.len() != 1 || args[0] != Ty::Text {
+                return Err(self.error(
+                    "WT104",
+                    "node requires one text argument",
+                    call_position(call),
+                ));
+            }
+            self.require_capability("ast.v1", "ast.v1 node capture APIs")?;
+            self.require_static_text(call, 0)?;
+            return Ok(Ty::Match.optional());
+        }
         let args = self.validate_arguments(call)?;
         match &receiver {
             Ty::Text => self.require_text_surface()?,
-            Ty::Input => self.require_capability("jsx.v1", "JSX APIs")?,
-            Ty::Match => self.require_capability("text.v1", "match APIs")?,
+            Ty::Match => self.require_any_capability(&["text.v1", "ast.v1"], "match APIs")?,
             Ty::Repo => self.require_any_capability(&["text.v1", "repo.v1"], "repository APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "path.v1", "repo.v1", "jsx.v1"],
+                &["text.v1", "path.v1", "repo.v1", "ast.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -1972,17 +2099,6 @@ impl Validator<'_> {
                 Ok(Ty::Text)
             }
             (Ty::Sequence(_), "is_empty") if args.is_empty() => Ok(Ty::Bool),
-            (Ty::Input, "attr") if args.len() == 1 && args[0] == Ty::Text => {
-                let name = self.require_static_text(call, 0)?;
-                if name.is_empty() {
-                    bail!("WT103 attribute name must not be empty")
-                }
-                Ok(Ty::Attr.optional())
-            }
-            (Ty::Input, "duplicate") if args.len() == 1 && args[0] == Ty::Text => {
-                self.require_static_text(call, 0)?;
-                Ok(Ty::Bool)
-            }
             (Ty::Match, "group_text") if args.len() == 1 && args[0] == Ty::Text => {
                 let name = self.require_static_text(call, 0)?;
                 if !self
@@ -2003,6 +2119,40 @@ impl Validator<'_> {
                 call_position(call),
             )),
         }
+    }
+
+    /// Validate and eagerly compile a static (language, pattern) ast.v1
+    /// argument pair, caching the compiled pattern by canonical key.
+    fn validate_ast_match_call(
+        &mut self,
+        call: &FnCallExpr,
+        language_index: usize,
+        pattern_index: usize,
+    ) -> Result<()> {
+        self.require_capability("ast.v1", "ast_match")?;
+        let language_text = self.require_static_text(call, language_index)?;
+        let language = AstLanguage::parse(&language_text).ok_or_else(|| {
+            self.error(
+                "WT104",
+                format!(
+                    "unsupported ast.v1 language {language_text:?}; this build supports {}",
+                    ast_match::supported_languages().join(", ")
+                ),
+                call.args
+                    .get(language_index)
+                    .map(Expr::position)
+                    .unwrap_or(Position::START),
+            )
+        })?;
+        let pattern_text = self.require_static_text(call, pattern_index)?;
+        if !self
+            .ast_patterns
+            .contains_key(&(language, pattern_text.clone()))
+        {
+            let compiled = ast_match::compile_pattern(language, &pattern_text)?;
+            self.ast_patterns.insert((language, pattern_text), compiled);
+        }
+        Ok(())
     }
 
     fn validate_call(&mut self, call: &FnCallExpr) -> Result<Ty> {
@@ -2137,10 +2287,6 @@ impl Validator<'_> {
                 self.require_static_pattern(call, 0)?;
                 Ok(Ty::Match.optional())
             }
-            ("jsx", "inputs") if args.len() == 1 && args[0] == Ty::File => {
-                require_capability(self.capabilities, "jsx.v1", "jsx APIs")?;
-                Ok(Ty::Sequence(Box::new(Ty::Input)))
-            }
             _ => Err(self.error(
                 "WT104",
                 format!("unregistered call {namespace}::{name} or invalid arity/types"),
@@ -2221,10 +2367,7 @@ impl Validator<'_> {
     }
 
     fn check_binding_name(&self, name: &str, pos: Position) -> Result<()> {
-        if matches!(
-            name,
-            "file" | "repo" | "emit" | "text" | "path" | "rx" | "jsx"
-        ) {
+        if matches!(name, "file" | "repo" | "emit" | "text" | "path" | "rx") {
             Err(self.error(
                 "WT105",
                 format!("reserved host name {name:?} cannot be shadowed"),
@@ -2667,12 +2810,6 @@ impl EvalContext<'_> {
             (Value::Match(_), "span") => bail!("capture_text matches do not have reportable spans"),
             (Value::Sequence(values), "len") => Ok(Value::Int(values.len() as i64)),
             (Value::Sequence(values), "is_empty") => Ok(Value::Bool(values.is_empty())),
-            (Value::Input(input), "span") => Ok(Value::Span(SpanValue {
-                file: input.file,
-                start: input.start,
-                end: input.end,
-            })),
-            (Value::Input(input), "has_spread") => Ok(Value::Bool(input.spread)),
             (Value::Line(line), "text") => {
                 self.charge_temporary(line.text.len())?;
                 Ok(Value::Text(line.text))
@@ -2682,11 +2819,6 @@ impl EvalContext<'_> {
                 start: line.start,
                 end: line.end,
             })),
-            (Value::Attr(attr), "kind") => Ok(Value::Text(attr.kind.into())),
-            (Value::Attr(attr), "canonical") => Ok(Value::Text(attr.canonical)),
-            (Value::Attr(attr), "static_string") => {
-                Ok(attr.static_string.map_or(Value::Unit, Value::Text))
-            }
             _ => bail!("unknown or unavailable WT property {name}"),
         }
     }
@@ -2771,40 +2903,68 @@ impl EvalContext<'_> {
                 Some(Value::Sequence(values)) => Ok(Value::Bool(values.is_empty())),
                 _ => bail!("is_empty requires a WT sequence"),
             },
-            ("", "attr") => {
-                let input = match args.first() {
-                    Some(Value::Input(input)) => input,
-                    _ => bail!("attr requires an input"),
+            ("", "ast_match") => {
+                let (file_index, scope) = match args.first() {
+                    Some(Value::File(file)) => (file.index, None),
+                    Some(Value::Match(matched)) if matched.reportable => {
+                        (matched.file, Some((matched.start, matched.end)))
+                    }
+                    Some(Value::Match(_)) => {
+                        bail!("ast_match requires a match with a reportable span")
+                    }
+                    _ => bail!("ast_match requires a file or a match"),
                 };
-                let name = expect_text(args.get(1))?;
-                let attr = input
-                    .attrs
-                    .iter()
-                    .find(|(attribute, _)| attribute == name)
-                    .map(|(_, value)| value);
-                if let Some(value) = attr {
-                    self.charge_temporary(
-                        value.kind.len()
-                            + value.canonical.len()
-                            + value.static_string.as_ref().map_or(0, |value| value.len()),
-                    )?;
-                }
-                Ok(attr.map_or(Value::Unit, |value| Value::Attr(value.clone())))
-            }
-            ("", "duplicate") => {
-                let input = match args.first() {
-                    Some(Value::Input(input)) => input,
-                    _ => bail!("duplicate requires an input"),
+                let language_text = expect_text(args.get(1))?;
+                let pattern_text = expect_text(args.get(2))?;
+                let language = AstLanguage::parse(language_text)
+                    .ok_or_else(|| anyhow!("unsupported ast.v1 language {language_text}"))?;
+                let pattern = self
+                    .program
+                    .ast_patterns
+                    .get(&(language, pattern_text.to_owned()))
+                    .ok_or_else(|| anyhow!("uncompiled ast.v1 pattern"))?;
+                let file = &self.files[file_index];
+                self.charge_native(file.text.len())?;
+                let (start, end, independent_slice) = match scope {
+                    Some((start, end)) => (start, end, true),
+                    None => (0, file.text.len(), false),
                 };
-                let name = expect_text(args.get(1))?;
-                Ok(Value::Bool(
-                    input
-                        .attrs
-                        .iter()
-                        .filter(|(attribute, _)| attribute == name)
-                        .count()
-                        > 1,
+                let matches = self.arena.ast_match(
+                    file_index,
+                    file,
+                    language,
+                    pattern_text,
+                    pattern,
+                    start,
+                    end,
+                    independent_slice,
+                    &mut self.temporary_bytes,
+                )?;
+                Ok(Value::Sequence(
+                    matches.into_iter().map(Value::Match).collect(),
                 ))
+            }
+            ("", "node") => {
+                let matched = match args.first() {
+                    Some(Value::Match(matched)) => matched,
+                    _ => bail!("node requires a match"),
+                };
+                match matched.node_spans.get(expect_text(args.get(1))?).copied() {
+                    Some((start, end)) => {
+                        let file = &self.files[matched.file];
+                        self.charge_temporary(end.saturating_sub(start))?;
+                        Ok(Value::Match(MatchValue {
+                            file: matched.file,
+                            start,
+                            end,
+                            text: file.text.slice(start..end),
+                            groups: Arc::new(HashMap::new()),
+                            node_spans: Arc::new(HashMap::new()),
+                            reportable: true,
+                        }))
+                    }
+                    None => Ok(Value::Unit),
+                }
             }
             ("", "group_text") => {
                 let matched = match args.first() {
@@ -2834,18 +2994,6 @@ impl EvalContext<'_> {
             }
             ("rx", "is_match" | "find_all" | "find_in" | "capture_text") => {
                 self.regex_call(name, args)
-            }
-            ("jsx", "inputs") => {
-                let file = expect_file(args.first())?;
-                self.charge_native(self.files[file.index].text.len())?;
-                let input = self.arena.jsx_inputs(
-                    file.index,
-                    &self.files[file.index],
-                    &mut self.temporary_bytes,
-                )?;
-                Ok(Value::Sequence(
-                    input.into_iter().map(Value::Input).collect(),
-                ))
             }
             ("repo", "files") => {
                 self.charge_temporary(self.files.len() * std::mem::size_of::<usize>())?;
@@ -3211,8 +3359,6 @@ fn value_size(value: &Value) -> usize {
         Value::Text(text) => text.len(),
         Value::Sequence(values) => values.iter().map(value_size).sum::<usize>() + values.len() * 16,
         Value::Match(matched) => match_value_size(matched),
-        Value::Input(input) => input_value_size(input),
-        Value::Attr(attr) => attr_value_size(attr),
         Value::Line(line) => line.text.len() + 32,
         _ => 32,
     }
@@ -3225,23 +3371,8 @@ fn match_value_size(value: &MatchValue) -> usize {
             .iter()
             .map(|(name, value)| name.len() + 24 + value.as_ref().map_or(0, |value| value.len()))
             .sum::<usize>()
+        + value.node_spans.len() * 32
         + 64
-}
-
-fn input_value_size(value: &InputValue) -> usize {
-    value
-        .attrs
-        .iter()
-        .map(|(name, attr)| name.len() + attr_value_size(attr))
-        .sum::<usize>()
-        + 64
-}
-
-fn attr_value_size(value: &AttrValue) -> usize {
-    value.kind.len()
-        + value.canonical.len()
-        + value.static_string.as_ref().map_or(0, |value| value.len())
-        + 32
 }
 fn expect_bool(value: Option<&Value>) -> Result<bool> {
     match value {
@@ -3293,299 +3424,6 @@ fn compare_str(op: &str, a: &str, b: &str) -> bool {
         ">=" => a >= b,
         _ => false,
     }
-}
-
-fn parse_jsx_inputs(file: usize, source: &str, max_bytes: usize) -> Result<Vec<InputValue>> {
-    let mut parser = Parser::new();
-    let language = tree_sitter_typescript::LANGUAGE_TSX.into();
-    parser
-        .set_language(&language)
-        .map_err(|error| anyhow!("unable to initialize jsx.v1 parser: {error}"))?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow!("jsx.v1 parser did not produce a tree"))?;
-    if tree.root_node().has_error() {
-        bail!("jsx.v1 parse failure");
-    }
-    let mut inputs = Vec::new();
-    let mut pending_bytes = 0usize;
-    collect_jsx_inputs(
-        tree.root_node(),
-        file,
-        source,
-        0,
-        max_bytes,
-        &mut pending_bytes,
-        &mut inputs,
-    )?;
-    Ok(inputs)
-}
-
-fn collect_jsx_inputs(
-    node: tree_sitter::Node<'_>,
-    file: usize,
-    source: &str,
-    depth: usize,
-    max_bytes: usize,
-    pending_bytes: &mut usize,
-    result: &mut Vec<InputValue>,
-) -> Result<()> {
-    if depth > MAX_NESTING_DEPTH {
-        bail!("jsx.v1 nesting depth exceeds the runtime watchdog budget");
-    }
-    let opening = match node.kind() {
-        "jsx_self_closing_element" => Some(node),
-        "jsx_element" => node.child_by_field_name("open_tag"),
-        _ => None,
-    };
-    if let Some(opening) = opening {
-        let name = opening
-            .child_by_field_name("name")
-            .ok_or_else(|| anyhow!("JSX element has no name"))?;
-        if name.utf8_text(source.as_bytes())? == "input" {
-            let estimated_bytes = opening
-                .end_byte()
-                .saturating_sub(opening.start_byte())
-                .saturating_add(64);
-            *pending_bytes = pending_bytes
-                .checked_add(estimated_bytes)
-                .ok_or_else(|| anyhow!("retained JSX result size overflow"))?;
-            if *pending_bytes > max_bytes {
-                bail!("retained query result budget exceeded");
-            }
-            let mut attrs = Vec::new();
-            let mut spread = false;
-            let mut cursor = opening.walk();
-            for child in opening.named_children(&mut cursor) {
-                match child.kind() {
-                    "jsx_attribute" => attrs.push(parse_jsx_attribute(child, source)?),
-                    "jsx_expression" => spread = true,
-                    _ => {}
-                }
-            }
-            result.push(InputValue {
-                file,
-                start: node.start_byte(),
-                end: node.end_byte(),
-                attrs: Arc::new(attrs),
-                spread,
-            });
-        }
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_jsx_inputs(
-            child,
-            file,
-            source,
-            depth + 1,
-            max_bytes,
-            pending_bytes,
-            result,
-        )?;
-    }
-    Ok(())
-}
-
-fn parse_jsx_attribute(node: tree_sitter::Node<'_>, source: &str) -> Result<(String, AttrValue)> {
-    let mut cursor = node.walk();
-    let mut children = node.named_children(&mut cursor);
-    let name = children
-        .next()
-        .ok_or_else(|| anyhow!("JSX attribute has no name"))?;
-    let name = name.utf8_text(source.as_bytes())?.to_owned();
-    let Some(value) = children.next() else {
-        return Ok((
-            name,
-            AttrValue {
-                kind: "boolean".into(),
-                canonical: String::new().into(),
-                static_string: None,
-            },
-        ));
-    };
-    let attr = match value.kind() {
-        "string" => {
-            let raw = value.utf8_text(source.as_bytes())?;
-            let quote = raw
-                .chars()
-                .next()
-                .ok_or_else(|| anyhow!("empty JSX string"))?;
-            let body = raw
-                .get(quote.len_utf8()..raw.len().saturating_sub(quote.len_utf8()))
-                .ok_or_else(|| anyhow!("invalid JSX string"))?;
-            let decoded = decode_js_string(body, quote)?;
-            AttrValue {
-                kind: "string".into(),
-                canonical: serde_json::to_string(&decoded)?.into(),
-                static_string: Some(decoded.into()),
-            }
-        }
-        "jsx_expression" => {
-            let start = value.start_byte().saturating_add(1);
-            let end = value.end_byte().saturating_sub(1);
-            let expression = canonical_jsx_expression(
-                source
-                    .get(start..end)
-                    .ok_or_else(|| anyhow!("invalid JSX expression boundary"))?,
-            )?;
-            AttrValue {
-                kind: "expression".into(),
-                static_string: serde_json::from_str::<String>(&expression)
-                    .ok()
-                    .map(SharedText::from),
-                canonical: expression.into(),
-            }
-        }
-        _ => bail!("unsupported JSX attribute value"),
-    };
-    Ok((name, attr))
-}
-
-fn canonical_jsx_expression(source: &str) -> Result<String> {
-    let mut tokens = Vec::new();
-    let bytes = source.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            index += 2;
-            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
-                index += 1;
-            }
-            index = (index + 2).min(bytes.len());
-            continue;
-        }
-        let character = source[index..]
-            .chars()
-            .next()
-            .ok_or_else(|| anyhow!("invalid JSX expression boundary"))?;
-        if character.is_whitespace() {
-            index += character.len_utf8();
-            continue;
-        }
-        if character == '\'' || character == '"' {
-            let quote = character;
-            let start = index + quote.len_utf8();
-            index = start;
-            let mut escaped = false;
-            while index < bytes.len() {
-                let current = source[index..]
-                    .chars()
-                    .next()
-                    .ok_or_else(|| anyhow!("unterminated JSX string literal"))?;
-                index += current.len_utf8();
-                if escaped {
-                    escaped = false;
-                } else if current == '\\' {
-                    escaped = true;
-                } else if current == quote {
-                    break;
-                }
-            }
-            if index == 0 || bytes[index - 1] != quote as u8 {
-                bail!("unterminated JSX string literal");
-            }
-            let body_end = index - quote.len_utf8();
-            tokens.push(serde_json::to_string(&decode_js_string(
-                &source[start..body_end],
-                quote,
-            )?)?);
-            continue;
-        }
-        if character.is_ascii_alphanumeric() || character == '_' || character == '$' {
-            let start = index;
-            index += character.len_utf8();
-            while index < bytes.len() {
-                let next = source[index..].chars().next().unwrap();
-                if !(next.is_ascii_alphanumeric() || next == '_' || next == '$') {
-                    break;
-                }
-                index += next.len_utf8();
-            }
-            tokens.push(source[start..index].to_owned());
-            continue;
-        }
-        let operator = [
-            "===", "!==", "=>", "==", "!=", "<=", ">=", "&&", "||", "??", "**",
-        ]
-        .iter()
-        .find(|operator| source[index..].starts_with(**operator));
-        if let Some(operator) = operator {
-            tokens.push((*operator).to_owned());
-            index += operator.len();
-        } else {
-            tokens.push(character.to_string());
-            index += character.len_utf8();
-        }
-    }
-    Ok(tokens.join(" "))
-}
-
-fn decode_js_string(source: &str, quote: char) -> Result<String> {
-    if quote == '"' {
-        return serde_json::from_str(&format!("\"{source}\""))
-            .map_err(|error| anyhow!("invalid JSX string literal: {error}"));
-    }
-    let mut result = String::new();
-    let mut chars = source.chars();
-    while let Some(character) = chars.next() {
-        if character != '\\' {
-            result.push(character);
-            continue;
-        }
-        let escaped = chars
-            .next()
-            .ok_or_else(|| anyhow!("invalid JSX string escape"))?;
-        match escaped {
-            'n' => result.push('\n'),
-            'r' => result.push('\r'),
-            't' => result.push('\t'),
-            'b' => result.push('\u{0008}'),
-            'f' => result.push('\u{000c}'),
-            'v' => result.push('\u{000b}'),
-            '0' => result.push('\0'),
-            '\n' => {}
-            '\r' => {
-                if chars.clone().next() == Some('\n') {
-                    chars.next();
-                }
-            }
-            'u' => {
-                let mut digits = String::new();
-                if chars.clone().next() == Some('{') {
-                    chars.next();
-                    for character in chars.by_ref() {
-                        if character == '}' {
-                            break;
-                        }
-                        digits.push(character);
-                    }
-                } else {
-                    for _ in 0..4 {
-                        digits.push(
-                            chars
-                                .next()
-                                .ok_or_else(|| anyhow!("invalid JSX unicode escape"))?,
-                        );
-                    }
-                }
-                let code = u32::from_str_radix(&digits, 16)
-                    .map_err(|_| anyhow!("invalid JSX unicode escape"))?;
-                result.push(
-                    char::from_u32(code).ok_or_else(|| anyhow!("invalid JSX unicode scalar"))?,
-                );
-            }
-            other => result.push(other),
-        }
-    }
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -3744,15 +3582,15 @@ mod tests {
     }
 
     #[test]
-    fn jsx_helper_ignores_strings_and_comments() {
-        let value = manifest(
-            json!({}),
-            json!({"hit":{"kind":"violation"}}),
-            &["text.v1", "jsx.v1"],
-        );
-        let program = compile(&value, "for input in jsx::inputs(file) { if input.attr(\"type\").static_string == \"number\" { emit(input.span, \"hit\"); } }").unwrap();
+    fn ast_helper_ignores_strings_and_comments() {
+        let value = manifest(json!({}), json!({"hit":{"kind":"violation"}}), &["ast.v1"]);
+        let program = compile(
+            &value,
+            r#"for m in file.ast_match("tsx", "<input type=\"number\" />") { emit(m.span, "hit"); }"#,
+        )
+        .unwrap();
         let mut arena = QueryArena::new(true);
-        let source = "const s = '<input type=\\\"number\\\">'; const t = `<input type=\\\"number\\\">`; const r = /<input type=\\\"number\\\">/; // <input type=\\\"number\\\">\nconst node = <input type={'number'} />;";
+        let source = "const s = \"<input type=\\\"number\\\" />\"; // <input type=\\\"number\\\" />\nconst node = <input type=\"number\" />;";
         let result = program
             .execute(
                 &[SourceFile {
@@ -3765,51 +3603,47 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(
             &source[result[0].start_byte..result[0].end_byte],
-            "<input type={'number'} />"
+            "<input type=\"number\" />"
         );
     }
 
     #[test]
-    fn decimal_rule_shape_from_the_spec_executes() {
+    fn ast_match_supports_nested_search_and_metavariable_capture() {
+        // The N+1 example from the task: match a `for` loop, then search
+        // inside its captured body for an ORM query call.
         let value = manifest(
-            json!({"template_number_type": "^(?P<parameter>[A-Za-z_$][A-Za-z0-9_$]*) \\. type === \\\"number\\\" \\? \\\"number\\\" : \\\"text\\\"$"}),
-            json!({
-                "decimal-step": {"kind": "violation"},
-                "unverified-step": {"kind": "review"}
-            }),
-            &["jsx.v1", "text.v1"],
+            json!({}),
+            json!({"n-plus-one":{"kind":"review"}}),
+            &["ast.v1"],
         );
-        let source =
-            r#"const node = <input type={value . type === "number" ? "number" : "text"} />;"#;
         let program = compile(
             &value,
             r#"
-            for input in jsx::inputs(file) {
-                let type_attr = input.attr("type");
-                if type_attr == () || type_attr.kind != "expression" { continue; }
-                let matched = rx::capture_text("template_number_type", type_attr.canonical);
-                if matched == () { continue; }
-                let parameter = matched.group_text("parameter");
-                let step = input.attr("step");
-                if step == () { emit(input.span, "decimal-step"); continue; }
-                let expected = parameter + " . type === \"number\" ? \"any\" : undefined";
-                if step.kind == "expression" && step.canonical == expected { continue; }
-                emit(input.span, "unverified-step");
+            for m in file.ast_match("python", "for $X in $ITER:\n    $$$BODY") {
+                for q in m.node("BODY").ast_match("python", "$QS.objects.$METHOD($$$)") {
+                    emit(q.span, "n-plus-one");
+                }
             }
         "#,
         )
         .unwrap();
+        let source = "for user in users:\n    posts = user.objects.filter(author=user)\n";
         let mut arena = QueryArena::new(true);
         let result = program
             .execute(
                 &[SourceFile {
-                    path: "x.tsx".into(),
+                    path: "x.py".into(),
                     text: source.into(),
                 }],
                 &mut arena,
             )
             .unwrap();
-        assert_eq!(result[0].code, "decimal-step");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].code, "n-plus-one");
+        assert_eq!(
+            &source[result[0].start_byte..result[0].end_byte],
+            "user.objects.filter(author=user)"
+        );
     }
 
     #[test]
@@ -3938,7 +3772,11 @@ mod tests {
         )
         .is_err();
         assert!(program);
-        let guarded = compile(&manifest(json!({}), json!({"x":{"kind":"violation"}}), &["text.v1", "jsx.v1"]), "for input in jsx::inputs(file) { let attr = input.attr(\"missing\"); if attr != () && attr.kind == \"string\" { emit(input.span, \"x\"); } }").unwrap();
+        let guarded = compile(
+            &manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]),
+            r#"for m in file.ast_match("tsx", "<input />") { let missing = m.node("missing"); if missing != () && missing.text == "z" { emit(missing.span, "x"); } }"#,
+        )
+        .unwrap();
         assert!(guarded
             .execute(
                 &[SourceFile {
@@ -4167,15 +4005,15 @@ mod tests {
                 "unused": "never"
             }),
             json!({"x":{"kind":"violation"}}),
-            &["text.v1", "jsx.v1"],
+            &["text.v1", "ast.v1"],
         );
         let program = compile(
             &value,
             r#"
                 const selected = "alias_a";
-                if text::contains(file.text, "jsx") {
-                    for input in jsx::inputs(file) {
-                        input.attr("type");
+                if text::contains(file.text, "ast") {
+                    for m in file.ast_match("tsx", "<input/>") {
+                        m.node("type");
                     }
                 }
                 for m in rx::find_all(file, selected) { emit(m.span, "x"); }
@@ -4186,11 +4024,11 @@ mod tests {
         .unwrap();
         let queries = &program.rule_ir().queries;
         assert!(queries.iter().any(|query| {
-            query.operation == "jsx.inputs"
+            query.operation == "ast.match"
                 && query.guards.iter().any(|guard| guard.kind == "if")
                 && query.guards.iter().any(|guard| guard.kind == "for")
         }));
-        assert!(queries.iter().any(|query| query.operation == "jsx.attr"));
+        assert!(queries.iter().any(|query| query.operation == "ast.node"));
         let finds = queries
             .iter()
             .filter(|query| query.operation == "regex.find_all")

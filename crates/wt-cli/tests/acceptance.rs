@@ -654,12 +654,12 @@ fn decimal_invalid_tsx_fails_when_parser_is_demanded_but_guard_skips_parser() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|error| error.to_string().contains("jsx.v1 parse failure")));
+        .any(|error| error.to_string().contains("ast.v1 analysis gap")));
 
     let mut guarded = decimal;
     guarded["id"] = json!("decimal-guard");
     guarded["code"]["source"] = json!(
-        "if false { for input in jsx::inputs(file) { emit(input.span, \"decimal-step\"); } }"
+        "if false { for m in file.ast_match(\"tsx\", \"<input/>\") { emit(m.span, \"decimal-step\"); } }"
     );
     let guarded_root = tempdir().unwrap();
     let guarded_global = tempdir().unwrap();

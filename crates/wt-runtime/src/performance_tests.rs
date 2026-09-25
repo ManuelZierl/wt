@@ -5,7 +5,7 @@ fn query_manifest() -> JsonValue {
         "execution": "file",
         "patterns": {"call": "request\\((?P<body>[^\\r\\n]*)\\)"},
         "diagnostics": {"hit": {"kind": "violation"}},
-        "code": {"language": "wt-rule-1", "capabilities": ["text.v1", "jsx.v1"]}
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1", "ast.v1"]}
     })
 }
 
@@ -154,16 +154,43 @@ fn source_text_queries_do_not_rehash_a_file_for_each_rule() {
 }
 
 #[test]
-fn cached_jsx_attributes_share_payloads_and_remap_only_local_handles() {
+fn cached_ast_matches_share_payloads_and_remap_only_local_handles() {
     let file = SourceFile {
         path: "source.tsx".into(),
         text: "const view = <input type=\"number\" step=\"any\" />;".into(),
     };
+    let pattern =
+        ast_match::compile_pattern(AstLanguage::Tsx, "<input type=\"$T\" step=\"any\" />").unwrap();
     let mut arena = QueryArena::new(true);
     let mut temporary = 0;
-    let first = arena.jsx_inputs(0, &file, &mut temporary).unwrap();
-    let second = arena.jsx_inputs(9, &file, &mut temporary).unwrap();
-    assert!(Arc::ptr_eq(&first[0].attrs, &second[0].attrs));
+    let first = arena
+        .ast_match(
+            0,
+            &file,
+            AstLanguage::Tsx,
+            "<input type=\"$T\" step=\"any\" />",
+            &pattern,
+            0,
+            file.text.len(),
+            false,
+            &mut temporary,
+        )
+        .unwrap();
+    let second = arena
+        .ast_match(
+            9,
+            &file,
+            AstLanguage::Tsx,
+            "<input type=\"$T\" step=\"any\" />",
+            &pattern,
+            0,
+            file.text.len(),
+            false,
+            &mut temporary,
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(&first[0].groups, &second[0].groups));
+    assert!(Arc::ptr_eq(&first[0].node_spans, &second[0].node_spans));
     assert_eq!(first[0].file, 0);
     assert_eq!(second[0].file, 9);
     assert_eq!(arena.stats()["parser_evaluations"], 1);
