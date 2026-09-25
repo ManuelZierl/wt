@@ -34,6 +34,8 @@ wt plan --rule local/rule-id --format json
 
 Use `--no-global` only when the intended policy is local-only. Otherwise the default combines global and local rules.
 
+Before adding many new rules, or when a check has become noisy, run `wt stats --format json` to see which existing rules are earning their place: it reruns a check with the same scope and flags as `wt check` and reports each rule's mode, severity, raw findings, review decisions by outcome, and a derived signal (`dead`, `noisy`, `useful`, `active`, `disabled`, or `unknown` when the underlying check is incomplete). See `wt guide stats` for the exact signal definitions.
+
 ## Choose Protection, Then Author
 
 Use an existing linter, behavioral regression test, type restriction, or API redesign when it preserves the lesson more reliably than a WT detector. A detector need not be invented for every fix. When WT is useful, distinguish a source-level recognition claim from the contextual question the reviewer must answer. Acceptable occurrences of a deliberate review pattern stay raw-positive.

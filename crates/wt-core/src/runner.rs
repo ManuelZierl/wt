@@ -38,6 +38,7 @@ pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
         "new" => create(options),
         "update" => update(options),
         "check" => check(options),
+        "stats" => stats(options),
         "plan" => plan(options),
         "list" => list(options),
         "show" => show(options),
@@ -103,6 +104,19 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "show_reviewed",
             "allow_empty",
             "stats",
+        ],
+        "stats" => &[
+            "paths",
+            "include_ignored",
+            "no_host_ignores",
+            "no_global",
+            "rules",
+            "no_cache",
+            "optimizer",
+            "changed",
+            "base",
+            "jobs",
+            "max_file_bytes",
         ],
         "plan" => &["rules", "rule", "no_global", "optimizer"],
         "list" => &["no_global"],
@@ -944,6 +958,175 @@ fn check(options: &Value) -> Result<Value> {
     Ok(result)
 }
 
+/// `wt stats`: a read-only view over data `wt check` and the review store
+/// already produce. No history is kept; every number is recomputed from the
+/// current repository, rules and stored review records on each run.
+///
+/// Per rule this reports the mode/severity, the raw findings from a check run
+/// with the same scope and flags as `wt check`, review decisions by outcome,
+/// how many of those decisions are currently stale, and one derived signal:
+/// - `disabled`: the rule does not currently execute.
+/// - `unknown`: the underlying check was incomplete; a signal would be a guess.
+/// - `useful`: at least one occurrence was confirmed as a real issue.
+/// - `dead`: no current findings and no review decisions at all.
+/// - `noisy`: most decided findings were accepted as acceptable.
+/// - `active`: none of the above; the rule has activity that has not settled
+///   into a clear pattern yet.
+fn stats(options: &Value) -> Result<Value> {
+    let mut check_options = Map::new();
+    for key in COMMON_OPTIONS.iter().copied().chain([
+        "paths",
+        "include_ignored",
+        "no_host_ignores",
+        "no_global",
+        "rules",
+        "no_cache",
+        "optimizer",
+        "changed",
+        "base",
+        "jobs",
+        "max_file_bytes",
+    ]) {
+        if let Some(value) = options.get(key) {
+            check_options.insert(key.to_owned(), value.clone());
+        }
+    }
+    // A rule that is disabled, or a repository with nothing currently
+    // enabled or matching, is still meaningful stats output (every rule
+    // reports as `disabled` or `dead`), not a hard failure.
+    check_options.insert("allow_empty".to_owned(), json!(true));
+    let checked = check(&Value::Object(check_options))?;
+    let complete = checked["complete"] == true;
+
+    let workspace = discovery::discover(options)?;
+    let requested = requested_rules(options)?;
+    let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
+
+    // A corrupt or inconsistent review store is already surfaced through
+    // `checked["errors"]` and `complete == false`; do not let it turn the
+    // whole stats command into a hard error.
+    let all_reviews =
+        reviews::list(&workspace.root, None).unwrap_or_else(|_| json!({"reviews": []}));
+    let mut finding_rule = BTreeMap::<String, String>::new();
+    let mut review_by_rule = BTreeMap::<String, [u64; 4]>::new();
+    for entry in all_reviews["reviews"].as_array().into_iter().flatten() {
+        let rule_id = entry["record"]["rule_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let finding_id = entry["record"]["finding_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        finding_rule.insert(finding_id, rule_id.clone());
+        let counts = review_by_rule.entry(rule_id).or_insert([0; 4]);
+        match entry["record"]["decision"].as_str() {
+            Some("acceptable") => counts[0] += 1,
+            Some("confirmed_issue") => counts[1] += 1,
+            Some("accepted_risk") => counts[2] += 1,
+            Some("needs_review") => counts[3] += 1,
+            _ => {}
+        }
+    }
+
+    let mut stale_by_rule = BTreeMap::<String, u64>::new();
+    let mut raw_by_rule = BTreeMap::<String, u64>::new();
+    if complete {
+        for record in checked["review_records"].as_array().into_iter().flatten() {
+            if record["validity"] == "stale" {
+                if let Some(rule_id) = record["finding_id"]
+                    .as_str()
+                    .and_then(|id| finding_rule.get(id))
+                {
+                    *stale_by_rule.entry(rule_id.clone()).or_default() += 1;
+                }
+            }
+        }
+        for finding in checked["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(checked["reviewed"].as_array().into_iter().flatten())
+        {
+            if let Some(rule_id) = finding["rule_id"].as_str() {
+                *raw_by_rule.entry(rule_id.to_owned()).or_default() += 1;
+            }
+        }
+    }
+
+    let mut rules_out = Vec::new();
+    for package in selected {
+        let id = package.qualified_id.clone();
+        let mode = effective_mode(&workspace, package);
+        let severity = package.manifest.severity.clone();
+        let raw_findings = raw_by_rule.get(&id).copied().unwrap_or(0);
+        let counts = review_by_rule.get(&id).copied().unwrap_or([0; 4]);
+        let stale = stale_by_rule.get(&id).copied().unwrap_or(0);
+        let decided = counts[0] + counts[1] + counts[2];
+        let signal = if mode == "disabled" {
+            "disabled"
+        } else if !complete {
+            "unknown"
+        } else if counts[1] > 0 {
+            "useful"
+        } else if raw_findings == 0 && decided == 0 && counts[3] == 0 {
+            "dead"
+        } else if decided > 0 && counts[0] * 2 > decided {
+            "noisy"
+        } else {
+            "active"
+        };
+        rules_out.push(json!({
+            "id": id,
+            "mode": mode,
+            "severity": severity,
+            "raw_findings": if complete { json!(raw_findings) } else { Value::Null },
+            "review_decisions": {"acceptable": counts[0], "confirmed_issue": counts[1],
+                "accepted_risk": counts[2], "needs_review": counts[3]},
+            "stale_decisions": if complete { json!(stale) } else { Value::Null },
+            "signal": signal,
+        }));
+    }
+    rules_out.sort_by(|left, right| {
+        signal_rank(left["signal"].as_str().unwrap_or(""))
+            .cmp(&signal_rank(right["signal"].as_str().unwrap_or("")))
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    let mut signals = Map::new();
+    for signal in ["dead", "noisy", "active", "useful", "disabled", "unknown"] {
+        let count = rules_out
+            .iter()
+            .filter(|rule| rule["signal"] == signal)
+            .count();
+        signals.insert(signal.to_owned(), json!(count));
+    }
+    Ok(envelope(
+        "stats",
+        if complete { "pass" } else { "incomplete" },
+        if complete { 0 } else { 2 },
+        json!({
+            "complete": complete,
+            "root": workspace.root,
+            "scope": checked["scope"],
+            "rules": rules_out,
+            "signals": signals,
+            "errors": checked["errors"],
+        }),
+    ))
+}
+
+fn signal_rank(signal: &str) -> u8 {
+    match signal {
+        "dead" => 0,
+        "noisy" => 1,
+        "active" => 2,
+        "useful" => 3,
+        "unknown" => 4,
+        "disabled" => 5,
+        _ => 6,
+    }
+}
+
 struct FileExecution<'a> {
     scopes: BTreeMap<String, PreparedScope>,
     key_prefixes: BTreeMap<String, String>,
@@ -1401,6 +1584,7 @@ fn schema(options: &Value) -> Result<Value> {
 const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
 const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
 const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and ast.v1 are explicit capabilities. ast.v1 adds file.ast_match(language, pattern) for structural matches, m.node(\"NAME\") for a captured metavariable, and m.ast_match(language, pattern) to search inside a match; a file with any parse error node is an analysis gap, never a silent no-match. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
+const STATS_GUIDE: &str = "wt stats runs a check with the same scope and flags as wt check, then reports per qualified rule: mode, severity, raw findings from that run, stored review decisions by outcome (acceptable, confirmed_issue, accepted_risk, needs_review), and how many of those decisions are currently stale. It keeps no history; every number is recomputed from the current repository, rules and review store. Each rule gets exactly one derived signal, in this priority order: disabled (mode is disabled), unknown (the underlying check was incomplete; never reported as dead), useful (at least one confirmed_issue decision), dead (no current findings and no review decisions at all), noisy (more than half of decided findings were accepted as acceptable), otherwise active. Run it before adding many new rules, or when a check has become noisy.";
 fn guide(options: &Value) -> Result<Value> {
     let topic = options
         .get("topic")
@@ -1410,7 +1594,10 @@ fn guide(options: &Value) -> Result<Value> {
         "author" => AUTHOR_GUIDE,
         "review" => REVIEW_GUIDE,
         "language" => LANGUAGE_GUIDE,
-        _ => bail!("unknown installed guide topic {topic:?}; choose author, review or language"),
+        "stats" => STATS_GUIDE,
+        _ => bail!(
+            "unknown installed guide topic {topic:?}; choose author, review, language or stats"
+        ),
     };
     Ok(envelope(
         "guide",
@@ -1428,11 +1615,12 @@ fn capabilities() -> Result<Value> {
         "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
         "language":"wt-rule-1", "helpers":["text.v1","ast.v1"],
         "ast":{"engine":wt_runtime::AST_ENGINE,"languages":wt_runtime::ast_supported_language_grammars().into_iter().map(|(language,grammar)| json!({"language":language,"grammar":grammar})).collect::<Vec<_>>()},
-        "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
+        "commands":["init","capabilities","guide","new","update","check","stats","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
         "guide_digests":{
             "author":crate::digest::digest_bytes(AUTHOR_GUIDE.as_bytes()),
             "review":crate::digest::digest_bytes(REVIEW_GUIDE.as_bytes()),
-            "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes())
+            "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes()),
+            "stats":crate::digest::digest_bytes(STATS_GUIDE.as_bytes())
         },
         "configuration_keys":["scan.respect_gitignore","scan.honor_git_local_excludes","scan.include_hidden","scan.max_file_bytes","scan.exclude","runtime.file_steps","runtime.file_native_bytes","runtime.repository_steps","runtime.repository_native_bytes","runtime.worker_memory_bytes","runtime.parent_memory_bytes","runtime.total_memory_bytes","optimizer.mode","rules.mode_overrides","coverage.expectations"],
         "check_options":{"optimizer":["auto","off"],"maximum_jobs":3,"maximum_file_bytes":67108864},

@@ -728,3 +728,46 @@ fn minimal_submission_lifecycle_reports_untested_then_checks_successfully() {
         1
     );
 }
+
+#[test]
+fn stats_reports_a_dead_rule_in_text_and_json() {
+    let root = tempdir().unwrap();
+    let global = tempdir().unwrap();
+    std::fs::write(root.path().join("source.txt"), "request(\"other\")\n").unwrap();
+    let created = invoke(
+        root.path(),
+        global.path(),
+        &["new", "--stdin", "--format", "json"],
+        Some(&submission("stats-example", "foo", "contains-foo")),
+    );
+    assert_eq!(created.status.code(), Some(0), "{created:?}");
+
+    let json = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache", "--format", "json"],
+        None,
+    );
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    let result = json_output(&json);
+    assert_eq!(result["command"], "stats");
+    assert_eq!(result["data"]["complete"], true);
+    let rules = result["data"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["id"], "local/stats-example");
+    assert_eq!(rules[0]["signal"], "dead");
+    assert_eq!(rules[0]["raw_findings"], 0);
+    assert_eq!(result["data"]["signals"]["dead"], 1);
+
+    let text = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache"],
+        None,
+    );
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(rendered.contains("DEAD"));
+    assert!(rendered.contains("local/stats-example"));
+    assert!(rendered.contains("analysis complete"));
+}

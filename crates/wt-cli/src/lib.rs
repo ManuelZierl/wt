@@ -193,6 +193,31 @@ pub enum Command {
         #[arg(long)]
         stats: bool,
     },
+    /// Report per-rule findings and review outcomes to spot noisy and dead rules.
+    Stats {
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+        #[arg(long = "include-ignored")]
+        include_ignored: bool,
+        #[arg(long = "no-host-ignores")]
+        no_host_ignores: bool,
+        #[arg(long = "no-global")]
+        no_global: bool,
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        #[arg(long, value_enum)]
+        optimizer: Option<Optimizer>,
+        #[arg(long)]
+        changed: bool,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long, value_name = "N")]
+        jobs: Option<u64>,
+        #[arg(long = "max-file-bytes", value_name = "N")]
+        max_file_bytes: Option<u64>,
+    },
     /// Inspect shared query planning without checking source files.
     Plan {
         #[arg(long = "rule", value_name = "ID")]
@@ -536,6 +561,47 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
                 object.insert("paths".to_owned(), json!(paths));
             }
         }
+        Command::Stats {
+            paths,
+            include_ignored,
+            no_host_ignores,
+            no_global,
+            rules,
+            no_cache,
+            optimizer,
+            changed,
+            base,
+            jobs,
+            max_file_bytes,
+        } => {
+            insert_if_true(&mut object, "include_ignored", *include_ignored);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "no_cache", *no_cache);
+            if let Some(mode) = optimizer {
+                object.insert(
+                    "optimizer".to_owned(),
+                    json!(match mode {
+                        Optimizer::Auto => "auto",
+                        Optimizer::Off => "off",
+                    }),
+                );
+            }
+            insert_if_true(&mut object, "changed", *changed);
+            if let Some(base) = base {
+                object.insert("base".to_owned(), json!(base));
+            }
+            if let Some(jobs) = jobs {
+                object.insert("jobs".to_owned(), json!(jobs));
+            }
+            if let Some(max_file_bytes) = max_file_bytes {
+                object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
+            }
+            if !paths.is_empty() {
+                object.insert("paths".to_owned(), json!(paths));
+            }
+        }
         Command::Plan {
             rules,
             no_global,
@@ -764,6 +830,52 @@ fn print_text(value: &Value, color: &ColorMode, display: bool) {
             return;
         }
     }
+    if value.get("command").and_then(Value::as_str) == Some("stats") {
+        let data = &value["data"];
+        for rule in data["rules"].as_array().into_iter().flatten() {
+            let signal = rule["signal"].as_str().unwrap_or("unknown");
+            let label = style_signal(signal, color);
+            let decisions = &rule["review_decisions"];
+            println!(
+                "{:<9} {} [{}, {}]",
+                label,
+                rule["id"].as_str().unwrap_or("<unknown>"),
+                rule["mode"].as_str().unwrap_or("?"),
+                rule["severity"].as_str().unwrap_or("?"),
+            );
+            println!(
+                "  raw={} acceptable={} confirmed_issue={} accepted_risk={} needs_review={} stale={}",
+                rule["raw_findings"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_owned()),
+                decisions["acceptable"].as_u64().unwrap_or(0),
+                decisions["confirmed_issue"].as_u64().unwrap_or(0),
+                decisions["accepted_risk"].as_u64().unwrap_or(0),
+                decisions["needs_review"].as_u64().unwrap_or(0),
+                rule["stale_decisions"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_owned()),
+            );
+        }
+        let signals = &data["signals"];
+        println!(
+            "{} dead, {} noisy, {} active, {} useful, {} disabled, {} unknown; {}.",
+            signals["dead"].as_u64().unwrap_or(0),
+            signals["noisy"].as_u64().unwrap_or(0),
+            signals["active"].as_u64().unwrap_or(0),
+            signals["useful"].as_u64().unwrap_or(0),
+            signals["disabled"].as_u64().unwrap_or(0),
+            signals["unknown"].as_u64().unwrap_or(0),
+            if data["complete"] == true {
+                "analysis complete"
+            } else {
+                "analysis incomplete"
+            }
+        );
+        return;
+    }
     if value.get("command").and_then(Value::as_str) == Some("check") {
         if let Some(diagnostics) = value.get("diagnostics").and_then(Value::as_array) {
             for diagnostic in diagnostics {
@@ -861,6 +973,25 @@ fn style_label(label: &str, color: &ColorMode) -> String {
     format!("\u{1b}[{code}m{label}\u{1b}[0m")
 }
 
+fn style_signal(signal: &str, color: &ColorMode) -> String {
+    let label = signal.to_uppercase();
+    let enabled = match color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    };
+    if !enabled {
+        return label;
+    }
+    let code = match signal {
+        "dead" | "noisy" => "31",
+        "unknown" => "33",
+        "useful" => "32",
+        _ => "0",
+    };
+    format!("\u{1b}[{code}m{label}\u{1b}[0m")
+}
+
 fn insert_if_true(object: &mut Map<String, Value>, key: &str, value: bool) {
     if value {
         object.insert(key.to_owned(), json!(true));
@@ -884,6 +1015,7 @@ fn command_string(command: &Command) -> String {
         Command::Init { .. } => "init",
         Command::New { .. } => "new",
         Command::Check { .. } => "check",
+        Command::Stats { .. } => "stats",
         Command::Plan { .. } => "plan",
         Command::List { .. } => "list",
         Command::Show { .. } => "show",
@@ -915,6 +1047,7 @@ fn command_name(args: &[OsString]) -> String {
                     | "init"
                     | "new"
                     | "check"
+                    | "stats"
                     | "plan"
                     | "list"
                     | "show"

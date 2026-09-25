@@ -336,6 +336,15 @@ fn default_protocol_is_compact_and_full_is_explicit() {
         inspected["data"]["previous"]["rationale"],
         "This marker is an approved example in this note."
     );
+    let rule_stats = run(root.path(), &["stats", "--no-global"], None);
+    assert!(validator.is_valid(&rule_stats), "{rule_stats}");
+    assert_eq!(rule_stats["data"]["complete"], true);
+    assert_eq!(rule_stats["data"]["rules"][0]["id"], "local/marker");
+    assert_eq!(rule_stats["data"]["rules"][0]["signal"], "noisy");
+    assert_eq!(
+        rule_stats["data"]["rules"][0]["review_decisions"]["acceptable"],
+        1
+    );
     fs::write(root.path().join("second.txt"), "bad").unwrap();
     let recurrence = run(
         root.path(),
