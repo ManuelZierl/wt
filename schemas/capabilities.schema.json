@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://watchtower.local/schemas/capabilities.schema.json",
+  "title": "Installed Watchtower capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command", "build", "specification_profile", "features", "schemas", "language", "helpers", "commands", "guide_digests", "configuration_keys", "check_options", "resource_support"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "capabilities"},
+    "build": {"type": "object", "required": ["version", "commit"], "properties": {"version": {"type": "string"}, "commit": {"type": "string", "minLength": 1}}},
+    "specification_profile": {"type": "object", "required": ["target_revision", "qualification"], "properties": {"target_revision": {"const": 3}, "qualification": {"enum": ["not_yet_qualified", "qualified"]}}},
+    "features": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "schemas": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "integer"}}},
+    "language": {"const": "wt-rule-1"},
+    "helpers": {"type": "array", "items": {"type": "string"}},
+    "commands": {"type": "array", "items": {"type": "string"}},
+    "guide_digests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+    "configuration_keys": {"type": "array", "items": {"type": "string"}},
+    "check_options": {"type": "object", "required": ["optimizer", "maximum_jobs", "maximum_file_bytes"], "properties": {"optimizer": {"type": "array", "items": {"enum": ["auto", "off"]}}, "maximum_jobs": {"type": "integer", "minimum": 1}, "maximum_file_bytes": {"type": "integer", "minimum": 1}}},
+    "resource_support": {"type": "object", "required": ["platform", "worker_processes", "hard_worker_memory_limit", "worker_reservation_bytes", "parent_reservation_bytes", "combined_scheduling_budget_bytes", "runtime_ceilings"], "properties": {"platform": {"type": "string"}, "worker_processes": {"type": "boolean"}, "hard_worker_memory_limit": {"type": "boolean"}, "worker_reservation_bytes": {"type": "integer", "minimum": 1}, "parent_reservation_bytes": {"type": "integer", "minimum": 1}, "combined_scheduling_budget_bytes": {"type": "integer", "minimum": 1}, "runtime_ceilings": {"type": "object"}}}
+  }
+}

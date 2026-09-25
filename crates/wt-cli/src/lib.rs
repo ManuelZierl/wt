@@ -14,6 +14,12 @@ pub enum OutputFormat {
 }
 
 #[derive(Clone, Debug, ValueEnum)]
+pub enum Detail {
+    Summary,
+    Full,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
 pub enum ColorMode {
     Auto,
     Always,
@@ -43,6 +49,7 @@ pub enum SchemaName {
     Plan,
     Waivers,
     Review,
+    Capabilities,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -64,6 +71,8 @@ pub struct Cli {
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Common {
+    #[arg(long, global = true, value_name = "N", default_value_t = 3)]
+    pub output_version: u64,
     #[arg(long, global = true, value_name = "PATH")]
     pub root: Option<PathBuf>,
     #[arg(long = "global-dir", global = true, value_name = "PATH")]
@@ -76,6 +85,13 @@ pub struct Common {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
+    /// Report installed build, supported schemas and offline guide digests.
+    Capabilities,
+    /// Show release-matched offline guidance.
+    Guide {
+        #[arg(value_name = "TOPIC")]
+        topic: Option<String>,
+    },
     /// Format local rule programs without changing detector behavior.
     Fmt {
         #[arg(value_name = "ID")]
@@ -113,7 +129,19 @@ pub enum Command {
         no_host_ignores: bool,
     },
     /// Inspect stored review decisions; does not claim they are current.
-    Reviews,
+    Reviews {
+        #[arg(value_name = "FINDING_ID")]
+        finding_id: Option<String>,
+    },
+    /// Evaluate one finding against current source and retained rationale.
+    Inspect {
+        #[arg(value_name = "FINDING_ID")]
+        finding_id: String,
+        #[arg(long)]
+        no_global: bool,
+        #[arg(long)]
+        no_host_ignores: bool,
+    },
 
     /// Initialize local or global Watchtower configuration.
     Init {
@@ -133,6 +161,10 @@ pub enum Command {
     },
     /// Run selected rules and apply current occurrence decisions.
     Check {
+        #[arg(long, value_enum, default_value_t = Detail::Summary)]
+        detail: Detail,
+        #[arg(long, value_name = "PATH", conflicts_with = "rules")]
+        submission: Option<PathBuf>,
         #[arg(value_name = "PATH")]
         paths: Vec<String>,
         #[arg(long = "include-ignored")]
@@ -147,8 +179,8 @@ pub enum Command {
         strict: bool,
         #[arg(long = "no-cache")]
         no_cache: bool,
-        #[arg(long, value_enum, default_value_t = Optimizer::Auto)]
-        optimizer: Optimizer,
+        #[arg(long, value_enum)]
+        optimizer: Option<Optimizer>,
         #[arg(long)]
         changed: bool,
         #[arg(long)]
@@ -159,6 +191,8 @@ pub enum Command {
         max_file_bytes: Option<u64>,
         #[arg(long = "show-suppressed")]
         show_suppressed: bool,
+        #[arg(long = "show-reviewed")]
+        show_reviewed: bool,
         #[arg(long = "allow-empty")]
         allow_empty: bool,
         #[arg(long)]
@@ -170,8 +204,8 @@ pub enum Command {
         rules: Vec<String>,
         #[arg(long = "no-global")]
         no_global: bool,
-        #[arg(long, value_enum, default_value_t = Optimizer::Auto)]
-        optimizer: Optimizer,
+        #[arg(long, value_enum)]
+        optimizer: Option<Optimizer>,
     },
     /// List rules, effective modes and package digests.
     List {
@@ -211,6 +245,8 @@ pub enum Command {
         allow_test_removal: bool,
         #[arg(long)]
         reason: Option<String>,
+        #[arg(long)]
+        preview: bool,
     },
     /// Explicitly change whether findings are advisory or blocking.
     SetMode {
@@ -240,11 +276,15 @@ pub enum Command {
     Config {
         #[arg(long = "no-global")]
         no_global: bool,
+        #[arg(long = "max-file-bytes", value_name = "N")]
+        max_file_bytes: Option<u64>,
     },
     /// Print a bundled machine-readable JSON schema.
     Schema {
         #[arg(value_enum, value_name = "NAME")]
         name: SchemaName,
+        #[arg(long, value_name = "N")]
+        schema_version: Option<u64>,
     },
     /// Manage derived caches; review records are never cache entries.
     Cache {
@@ -274,7 +314,13 @@ where
                 )
             {
                 let command = command_name(&args);
-                print_json(&command_error(&command, error.to_string()));
+                let version = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--output-version")
+                    .and_then(|pair| pair[1].to_str())
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(3);
+                print_json(&command_error(&command, error.to_string(), version));
                 2
             } else {
                 let code = if matches!(
@@ -294,31 +340,93 @@ where
 
 fn execute(cli: Cli) -> i32 {
     let command = command_string(&cli.command);
-    if let Command::Schema { name } = &cli.command {
-        return print_bundled_schema(name);
+    let display = match &cli.command {
+        Command::Check {
+            show_reviewed,
+            show_suppressed,
+            ..
+        } => (*show_reviewed, *show_suppressed),
+        _ => (false, false),
+    };
+    if let Command::Schema {
+        name,
+        schema_version,
+    } = &cli.command
+    {
+        return print_bundled_schema(name, *schema_version);
     }
     let options = match options(&cli) {
         Ok(options) => options,
         Err(error) => {
-            return finish(&cli.common.format, &cli.common.color, &command, Err(error));
+            return finish(
+                &cli.common.format,
+                &cli.common.color,
+                &command,
+                cli.common.output_version,
+                display,
+                Err(error),
+            );
         }
     };
     let result = std::env::current_exe()
         .map_err(anyhow::Error::from)
         .and_then(|exe| wt_core::dispatch_with_worker(&command, &options, &exe));
-    finish(&cli.common.format, &cli.common.color, &command, result)
+    finish(
+        &cli.common.format,
+        &cli.common.color,
+        &command,
+        cli.common.output_version,
+        display,
+        result,
+    )
 }
 
-fn print_bundled_schema(name: &SchemaName) -> i32 {
+fn print_bundled_schema(name: &SchemaName, version: Option<u64>) -> i32 {
+    if let Some(version) = version {
+        let supported = match name {
+            SchemaName::Result | SchemaName::Config | SchemaName::Rule | SchemaName::Submission => {
+                matches!(version, 2 | 3)
+            }
+            SchemaName::Review | SchemaName::Capabilities => version == 1,
+            SchemaName::Tests | SchemaName::Waivers | SchemaName::Plan => version == 2,
+        };
+        if !supported {
+            eprintln!(
+                "unsupported schema version {version} for {}",
+                schema_string(name)
+            );
+            return 2;
+        }
+    }
+    if matches!(name, SchemaName::Rule | SchemaName::Submission) {
+        let schema = wt_core::package_schema(schema_string(name), version.unwrap_or(3));
+        return match schema {
+            Ok(schema) => {
+                print_json(&schema);
+                0
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                2
+            }
+        };
+    }
     let schema = match name {
         SchemaName::Rule => include_str!("../../../schemas/rule.schema.json"),
         SchemaName::Submission => include_str!("../../../schemas/submission.schema.json"),
         SchemaName::Tests => include_str!("../../../schemas/tests.schema.json"),
+        SchemaName::Config if version == Some(2) => {
+            include_str!("../../../schemas/config-v2.schema.json")
+        }
         SchemaName::Config => include_str!("../../../schemas/config.schema.json"),
+        SchemaName::Result if version != Some(2) => {
+            include_str!("../../../schemas/result-v3.schema.json")
+        }
         SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
         SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
         SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
         SchemaName::Review => include_str!("../../../schemas/review.schema.json"),
+        SchemaName::Capabilities => include_str!("../../../schemas/capabilities.schema.json"),
     };
     print!("{schema}");
     if !schema.ends_with('\n') {
@@ -330,6 +438,12 @@ fn print_bundled_schema(name: &SchemaName) -> i32 {
 fn options(cli: &Cli) -> anyhow::Result<Value> {
     let mut object = common_options(&cli.common);
     match &cli.command {
+        Command::Capabilities => {}
+        Command::Guide { topic } => {
+            if let Some(topic) = topic {
+                object.insert("topic".to_owned(), json!(topic));
+            }
+        }
         Command::Fmt { id, check, global } => {
             if let Some(id) = id {
                 object.insert("id".to_owned(), json!(id));
@@ -375,7 +489,20 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             insert_if_true(&mut object, "no_global", *no_global);
             insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
         }
-        Command::Reviews => {}
+        Command::Reviews { finding_id } => {
+            if let Some(id) = finding_id {
+                object.insert("finding_id".to_owned(), json!(id));
+            }
+        }
+        Command::Inspect {
+            finding_id,
+            no_global,
+            no_host_ignores,
+        } => {
+            object.insert("finding_id".to_owned(), json!(finding_id));
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+        }
         Command::Init { global } => {
             object.insert("global".to_owned(), json!(global));
         }
@@ -392,6 +519,8 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             );
         }
         Command::Check {
+            detail,
+            submission,
             paths,
             include_ignored,
             no_host_ignores,
@@ -405,17 +534,34 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             jobs,
             max_file_bytes,
             show_suppressed,
+            show_reviewed,
             allow_empty,
             stats,
         } => {
+            object.insert(
+                "detail".to_owned(),
+                json!(match detail {
+                    Detail::Summary => "summary",
+                    Detail::Full => "full",
+                }),
+            );
+            if let Some(path) = submission {
+                object.insert("submission".to_owned(), read_json_file(path)?);
+            }
             insert_if_true(&mut object, "include_ignored", *include_ignored);
             insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
             insert_if_true(&mut object, "no_global", *no_global);
             insert_if_nonempty(&mut object, "rules", rules);
             insert_if_true(&mut object, "strict", *strict);
             insert_if_true(&mut object, "no_cache", *no_cache);
-            if !matches!(optimizer, Optimizer::Auto) {
-                object.insert("optimizer".to_owned(), json!("off"));
+            if let Some(mode) = optimizer {
+                object.insert(
+                    "optimizer".to_owned(),
+                    json!(match mode {
+                        Optimizer::Auto => "auto",
+                        Optimizer::Off => "off",
+                    }),
+                );
             }
             insert_if_true(&mut object, "changed", *changed);
             if let Some(base) = base {
@@ -428,6 +574,12 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
                 object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
             }
             insert_if_true(&mut object, "show_suppressed", *show_suppressed);
+            insert_if_true(&mut object, "show_reviewed", *show_reviewed);
+            if matches!(cli.common.format, OutputFormat::Text)
+                && (*show_reviewed || *show_suppressed)
+            {
+                object.insert("detail".to_owned(), json!("full"));
+            }
             insert_if_true(&mut object, "allow_empty", *allow_empty);
             insert_if_true(&mut object, "stats", *stats);
             if !paths.is_empty() {
@@ -441,12 +593,27 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
         } => {
             insert_if_nonempty(&mut object, "rules", rules);
             insert_if_true(&mut object, "no_global", *no_global);
-            if !matches!(optimizer, Optimizer::Auto) {
-                object.insert("optimizer".to_owned(), json!("off"));
+            if let Some(mode) = optimizer {
+                object.insert(
+                    "optimizer".to_owned(),
+                    json!(match mode {
+                        Optimizer::Auto => "auto",
+                        Optimizer::Off => "off",
+                    }),
+                );
             }
         }
-        Command::List { no_global } | Command::Config { no_global } => {
+        Command::List { no_global } => {
             insert_if_true(&mut object, "no_global", *no_global);
+        }
+        Command::Config {
+            no_global,
+            max_file_bytes,
+        } => {
+            insert_if_true(&mut object, "no_global", *no_global);
+            if let Some(bytes) = max_file_bytes {
+                object.insert("max_file_bytes".to_owned(), json!(bytes));
+            }
         }
         Command::Show { id } => {
             object.insert("id".to_owned(), json!(id));
@@ -475,6 +642,7 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             expect_hash,
             allow_test_removal,
             reason,
+            preview,
         } => {
             object.insert("id".to_owned(), json!(id));
             object.insert("expect_hash".to_owned(), json!(expect_hash));
@@ -483,6 +651,7 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             if let Some(reason) = reason {
                 object.insert("reason".to_owned(), json!(reason));
             }
+            insert_if_true(&mut object, "preview", *preview);
         }
         Command::SetMode {
             id,
@@ -508,8 +677,14 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             insert_if_true(&mut object, "include_ignored", *include_ignored);
             insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
         }
-        Command::Schema { name } => {
+        Command::Schema {
+            name,
+            schema_version,
+        } => {
             object.insert("schema".to_owned(), json!(schema_string(name)));
+            if let Some(version) = schema_version {
+                object.insert("schema_version".to_owned(), json!(version));
+            }
         }
         Command::Cache { command } => match command {
             CacheCommand::Clear => {}
@@ -520,6 +695,7 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
 
 fn common_options(common: &Common) -> Map<String, Value> {
     let mut object = Map::new();
+    object.insert("output_version".to_owned(), json!(common.output_version));
     if let Some(root) = &common.root {
         object.insert("root".to_owned(), json!(root));
     }
@@ -585,27 +761,40 @@ fn finish(
     format: &OutputFormat,
     color: &ColorMode,
     command: &str,
+    version: u64,
+    display: (bool, bool),
     result: anyhow::Result<Value>,
 ) -> i32 {
     let value = match result {
         Ok(value) => value,
-        Err(error) => command_error(command, error.to_string()),
+        Err(error) => command_error(command, error.to_string(), version),
     };
-    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(2) as i32;
+    let exit_code = value
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map(|n| n as i32)
+        .unwrap_or(if command == "capabilities" { 0 } else { 2 });
     match format {
         OutputFormat::Json => print_json(&value),
-        OutputFormat::Text => print_text(&value, color),
+        OutputFormat::Text => print_text(&value, color, display),
     }
     exit_code
 }
 
-fn command_error(command: &str, error: String) -> Value {
+fn command_error(command: &str, error: String, version: u64) -> Value {
+    if version == 2 {
+        return json!({"schema_version":2,"command":command,"status":"error","exit_code":2,"error":error});
+    }
     json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "command": command,
         "status": "error",
         "exit_code": 2,
-        "error": error
+        "detail": "summary",
+        "data": {},
+        "stages": [],
+        "notices": [],
+        "errors": [{"error":error}]
     })
 }
 
@@ -618,10 +807,23 @@ fn print_json(value: &Value) {
     }
 }
 
-fn print_text(value: &Value, color: &ColorMode) {
-    if let Some(error) = value.get("error").and_then(Value::as_str) {
+fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
+    if let Some(error) = value
+        .get("error")
+        .or_else(|| value["errors"].get(0).and_then(|e| e.get("error")))
+        .and_then(Value::as_str)
+    {
         println!("error: {error}");
         return;
+    }
+    if value["command"] == "guide" {
+        if let Some(text) = value["data"]["text"]
+            .as_str()
+            .or_else(|| value["text"].as_str())
+        {
+            println!("{text}");
+            return;
+        }
     }
     if value.get("command").and_then(Value::as_str) == Some("check") {
         if let Some(diagnostics) = value.get("diagnostics").and_then(Value::as_array) {
@@ -653,7 +855,17 @@ fn print_text(value: &Value, color: &ColorMode) {
                     );
                 }
                 if diagnostic["review_state"]["validity"] == "stale" {
-                    println!("  review: STALE — source, rule or watched evidence changed");
+                    println!(
+                        "  review: STALE — {}",
+                        diagnostic["review_state"]["reasons"]
+                            .as_array()
+                            .map(|reasons| reasons
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", "))
+                            .unwrap_or_default()
+                    );
                 }
                 if let Some(help) = diagnostic["help"].as_str() {
                     println!("  help: {help}");
@@ -665,13 +877,38 @@ fn print_text(value: &Value, color: &ColorMode) {
                 println!("analysis error: {}", error);
             }
         }
-        if let Some(records) = value.get("reviewed").and_then(Value::as_array) {
-            println!(
+        if display.0 {
+            for finding in value["reviewed"].as_array().into_iter().flatten() {
+                println!(
+                    "REVIEWED {}:{} {}",
+                    finding["path"].as_str().unwrap_or("<unknown>"),
+                    finding["start_line"],
+                    finding["rule_id"].as_str().unwrap_or("<unknown>")
+                );
+            }
+        }
+        if display.1 {
+            for finding in value["suppressed"].as_array().into_iter().flatten() {
+                println!(
+                    "WAIVED {}:{} {}",
+                    finding["path"].as_str().unwrap_or("<unknown>"),
+                    finding["start_line"],
+                    finding["rule_id"].as_str().unwrap_or("<unknown>")
+                );
+            }
+        }
+        if value["schema_version"] == 2 {
+            if let Some(records) = value.get("reviewed").and_then(Value::as_array) {
+                println!(
                 "{} occurrence(s) covered by current explicit review decisions (retained in JSON).",
                 records.len()
             );
+            }
         }
         let summary = &value["summary"];
+        if let Some(count) = summary["reviewed_occurrences"].as_u64() {
+            println!("{count} occurrence(s) covered by current review decisions.");
+        }
         println!(
             "{} blocking diagnostic(s); {} advisory diagnostic(s); {} file(s) checked; {}.",
             summary["blocking_diagnostics"].as_u64().unwrap_or(0),
@@ -717,9 +954,12 @@ fn insert_if_nonempty(object: &mut Map<String, Value>, key: &str, values: &[Stri
 
 fn command_string(command: &Command) -> String {
     match command {
+        Command::Capabilities => "capabilities",
+        Command::Guide { .. } => "guide",
         Command::Fmt { .. } => "fmt",
         Command::Review { .. } => "review",
-        Command::Reviews => "reviews",
+        Command::Reviews { .. } => "reviews",
+        Command::Inspect { .. } => "inspect",
         Command::Init { .. } => "init",
         Command::New { .. } => "new",
         Command::Check { .. } => "check",
@@ -745,9 +985,12 @@ fn command_name(args: &[OsString]) -> String {
         .find(|arg| {
             matches!(
                 *arg,
-                "fmt"
+                "capabilities"
+                    | "guide"
+                    | "fmt"
                     | "review"
                     | "reviews"
+                    | "inspect"
                     | "init"
                     | "new"
                     | "check"
@@ -809,6 +1052,7 @@ fn schema_string(value: &SchemaName) -> &'static str {
         SchemaName::Plan => "plan",
         SchemaName::Waivers => "waivers",
         SchemaName::Review => "review",
+        SchemaName::Capabilities => "capabilities",
     }
 }
 

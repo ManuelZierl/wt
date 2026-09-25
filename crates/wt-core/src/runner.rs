@@ -20,6 +20,7 @@ const COMMON_OPTIONS: &[&str] = &[
     "global_dir",
     "format",
     "color",
+    "output_version",
     "_worker_executable",
 ];
 
@@ -28,9 +29,13 @@ pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
     match command {
         "fmt" => format_rules(options),
         "review" => review(options),
-        "reviews" => reviews::list(&discovery::resolve_root(
-            options.get("root").and_then(Value::as_str),
-        )?),
+        "reviews" => reviews::list(
+            &discovery::resolve_root(options.get("root").and_then(Value::as_str))?,
+            options.get("finding_id").and_then(Value::as_str),
+        ),
+        "inspect" => inspect(options),
+        "capabilities" => capabilities(),
+        "guide" => guide(options),
         "init" => init(options),
         "new" => create(options),
         "update" => update(options),
@@ -67,7 +72,10 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "no_global",
             "no_host_ignores",
         ],
-        "reviews" => &[],
+        "reviews" => &["finding_id"],
+        "inspect" => &["finding_id", "no_global", "no_host_ignores"],
+        "capabilities" => &[],
+        "guide" => &["topic"],
         "init" => &["global"],
         "new" => &["global", "submission"],
         "update" => &[
@@ -76,8 +84,11 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "expect_hash",
             "allow_test_removal",
             "reason",
+            "preview",
         ],
         "check" => &[
+            "detail",
+            "submission",
             "paths",
             "include_ignored",
             "no_host_ignores",
@@ -92,12 +103,14 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "jobs",
             "max_file_bytes",
             "show_suppressed",
+            "show_reviewed",
             "allow_empty",
             "stats",
         ],
         "plan" => &["rules", "rule", "no_global", "optimizer"],
-        "list" | "config" => &["no_global"],
-        "schema" => &["schema", "id"],
+        "list" => &["no_global"],
+        "config" => &["no_global", "max_file_bytes"],
+        "schema" => &["schema", "id", "schema_version"],
         "show" | "validate" | "test" => &["id", "rules", "rule", "no_global", "submission"],
         "set-mode" => &["id", "mode", "reason", "no_global"],
         "explain" => &[
@@ -129,7 +142,17 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
     }
     if let Some(jobs) = object.get("jobs") {
         if !jobs.as_u64().is_some_and(|jobs| (1..=3).contains(&jobs)) {
-            bail!("jobs must be between 1 and 3 (combined worker memory ceiling)")
+            bail!("jobs must be between 1 and 3 under the absolute worker memory ceiling")
+        }
+    }
+    if let Some(version) = object.get("output_version") {
+        if !matches!(version.as_u64(), Some(2 | 3)) {
+            bail!("output_version must be 2 or 3")
+        }
+    }
+    if let Some(detail) = object.get("detail") {
+        if !matches!(detail.as_str(), Some("summary" | "full")) {
+            bail!("detail must be summary or full")
         }
     }
     Ok(())
@@ -149,7 +172,7 @@ fn init(options: &Value) -> Result<Value> {
         write_create_new(
             &config_path,
             br#"{
-  "schema_version": 2,
+  "schema_version": 3,
   "scan": {
     "respect_gitignore": true,
     "honor_git_local_excludes": true,
@@ -184,8 +207,17 @@ fn create(options: &Value) -> Result<Value> {
     }
     let global = bool_option(options, "global", false)?;
     let root = discovery::resolve_root(options.get("root").and_then(Value::as_str))?;
+    let global_dir = config::global_dir(options.get("global_dir").and_then(Value::as_str))?;
+    let global_config = config::load(&global_dir.join("config.json"))?;
+    let local_config = if global {
+        None
+    } else {
+        config::load(&root.join(".wt/config.json"))?
+    };
+    let effective = config::merge(global_config.as_ref(), local_config.as_ref(), options)?;
+    let limits = effective.runtime.limits(effective.scan.max_file_bytes);
     let parent = if global {
-        config::global_dir(options.get("global_dir").and_then(Value::as_str))?.join("rules")
+        global_dir.join("rules")
     } else {
         root.join(".wt/rules")
     };
@@ -204,7 +236,15 @@ fn create(options: &Value) -> Result<Value> {
     if let Some(outcome) = loaded
         .tests
         .as_ref()
-        .map(|_| run_fixtures(&loaded, &program, options))
+        .map(|_| {
+            run_fixtures_with_limits(
+                &loaded,
+                &program,
+                options,
+                limits,
+                effective.runtime.memory(),
+            )
+        })
         .transpose()?
     {
         if !outcome.passed {
@@ -256,7 +296,12 @@ fn update(options: &Value) -> Result<Value> {
         .directory
         .parent()
         .ok_or_else(|| anyhow!("invalid package path"))?;
-    let lock = acquire_lock(parent, &submission.id)?;
+    let preview = bool_option(options, "preview", false)?;
+    let lock = if preview {
+        None
+    } else {
+        Some(acquire_lock(parent, &submission.id)?)
+    };
     let current = rule::load_package(&package.directory, &package.scope_name)?;
     let package = &current;
     if package.digest != expected {
@@ -297,7 +342,15 @@ fn update(options: &Value) -> Result<Value> {
             }
         }
     }
-    let replacement = write_replacement(parent, &submission)?;
+    let preview_dir = if preview {
+        Some(tempfile::tempdir()?)
+    } else {
+        None
+    };
+    let replacement = write_replacement(
+        preview_dir.as_ref().map_or(parent, |dir| dir.path()),
+        &submission,
+    )?;
     let candidate = rule::load_package(replacement.path(), &package.scope_name)?;
     if candidate.manifest.mode == "enforced" && !enforcement_evidence(&candidate) {
         bail!("enforced rule requires applicable positive and nonempty negative fixtures")
@@ -306,12 +359,62 @@ fn update(options: &Value) -> Result<Value> {
     if let Some(outcome) = candidate
         .tests
         .as_ref()
-        .map(|_| run_fixtures(&candidate, &program, options))
+        .map(|_| {
+            run_fixtures_with_limits(
+                &candidate,
+                &program,
+                options,
+                workspace
+                    .effective_config
+                    .runtime
+                    .limits(workspace.effective_config.scan.max_file_bytes),
+                workspace.effective_config.runtime.memory(),
+            )
+        })
         .transpose()?
     {
         if !outcome.passed {
             bail!("supplied fixture suite failed")
         }
+    }
+    let changes = {
+        let old_cases = old_submission.tests.as_ref().map(|suite| &suite.cases);
+        let new_cases = submission.tests.as_ref().map(|suite| &suite.cases);
+        let old_by_name = old_cases
+            .into_iter()
+            .flatten()
+            .map(|case| (case.name.as_str(), case))
+            .collect::<BTreeMap<_, _>>();
+        let new_by_name = new_cases
+            .into_iter()
+            .flatten()
+            .map(|case| (case.name.as_str(), case))
+            .collect::<BTreeMap<_, _>>();
+        json!({
+            "added_cases": new_by_name.keys().filter(|name| !old_by_name.contains_key(*name)).collect::<Vec<_>>(),
+            "removed_cases": old_by_name.keys().filter(|name| !new_by_name.contains_key(*name)).collect::<Vec<_>>(),
+            "changed_inputs": old_by_name.iter().filter_map(|(name, old)| new_by_name.get(name).filter(|new| json!(old.files) != json!(new.files)).map(|_| name)).collect::<Vec<_>>(),
+            "changed_expectations": old_by_name.iter().filter_map(|(name, old)| new_by_name.get(name).filter(|new| json!(old.expect) != json!(new.expect)).map(|_| name)).collect::<Vec<_>>(),
+            "code": package.source != candidate.source,
+            "patterns": json!(package.manifest.patterns) != json!(candidate.manifest.patterns),
+            "diagnostics": json!(package.manifest.diagnostics) != json!(candidate.manifest.diagnostics),
+            "documentation": old_submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()) != submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()),
+            "scope": serde_json::to_value(&package.manifest.scope)? != serde_json::to_value(&candidate.manifest.scope)?,
+            "mode": package.manifest.mode != candidate.manifest.mode,
+            "execution": package.manifest.execution != candidate.manifest.execution,
+            "severity": package.manifest.severity != candidate.manifest.severity,
+            "metadata": package.manifest.metadata != candidate.manifest.metadata
+        })
+    };
+    if preview {
+        return Ok(envelope(
+            "update",
+            "pass",
+            0,
+            json!({"preview":true, "qualified_id": package.qualified_id,
+            "previous_digest": package.digest, "candidate_digest": candidate.digest,
+            "changes": changes, "validation":"passed", "tests": if candidate.tests.is_some() {"passed"} else {"untested"}}),
+        ));
     }
     let backup = parent.join(format!(".{}.backup", package.manifest.id));
     if backup.exists() {
@@ -334,17 +437,59 @@ fn update(options: &Value) -> Result<Value> {
         "update",
         "pass",
         0,
-        json!({"qualified_id": loaded.qualified_id, "path": loaded.directory, "mode": loaded.manifest.mode, "digest": loaded.digest, "validation": "passed", "tests": if loaded.tests.is_some() {"passed"} else {"untested"}}),
+        json!({"qualified_id": loaded.qualified_id, "path": loaded.directory, "mode": loaded.manifest.mode, "digest": loaded.digest, "previous_digest": expected, "changes": changes, "validation": "passed", "tests": if loaded.tests.is_some() {"passed"} else {"untested"}}),
     ))
 }
 
 fn check(options: &Value) -> Result<Value> {
-    let mut workspace = discovery::discover(options)?;
+    let started = std::time::Instant::now();
+    let mut discovery_options = options.clone();
+    if options.get("submission").is_some() {
+        discovery_options["_candidate_preview"] = json!(true);
+    }
+    let mut workspace = discovery::discover(&discovery_options)?;
+    let preview_dir = if let Some(value) = options.get("submission") {
+        if requested_rules(options)?.is_some() {
+            bail!("candidate preview cannot select installed rules")
+        }
+        let submission = rule::prepare_submission(rule::submission_from_value(value.clone())?)?;
+        if submission.tests.as_ref().is_some_and(|suite| {
+            suite
+                .cases
+                .iter()
+                .flat_map(|case| case.files.iter())
+                .any(|file| file.fixture.is_some())
+        }) {
+            bail!("candidate preview requires inline fixture content")
+        }
+        let temp = tempfile::tempdir()?;
+        let package_dir = write_replacement(temp.path(), &submission)?;
+        let candidate = rule::load_package(package_dir.path(), "candidate")?;
+        workspace.packages = vec![candidate];
+        Some((temp, package_dir))
+    } else {
+        None
+    };
+    let preview = preview_dir.is_some();
     if bool_option(options, "no_host_ignores", false)? {
         workspace.effective_config.scan.honor_git_local_excludes = false;
+        workspace
+            .effective_config
+            .origins
+            .push(config::ValueOrigin {
+                key: "scan.honor_git_local_excludes".to_owned(),
+                origin: "cli".to_owned(),
+            });
     }
     if bool_option(options, "include_ignored", false)? {
         workspace.effective_config.scan.respect_gitignore = false;
+        workspace
+            .effective_config
+            .origins
+            .push(config::ValueOrigin {
+                key: "scan.respect_gitignore".to_owned(),
+                origin: "cli".to_owned(),
+            });
     }
     let requested = requested_rules(options)?;
     let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
@@ -354,14 +499,14 @@ fn check(options: &Value) -> Result<Value> {
         .filter(|package| effective_mode(&workspace, package) != "disabled")
         .collect::<Vec<_>>();
     let allow_empty = bool_option(options, "allow_empty", false)?;
-    if enabled.is_empty() && !allow_empty {
+    if enabled.is_empty() && !allow_empty && workspace.effective_config.expectations.is_empty() {
         bail!("no enabled rules; use allow_empty to permit an empty check")
     }
     let changed = options
         .get("changed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let no_cache = bool_option(options, "no_cache", false)?;
+    let no_cache = preview || bool_option(options, "no_cache", false)?;
     let mut cache = cache::Store::new(!no_cache);
     let mut programs = Vec::new();
     let mut rule_summaries = Vec::new();
@@ -372,7 +517,11 @@ fn check(options: &Value) -> Result<Value> {
             Ok(program) => {
                 let mut gate_passed = true;
                 if package.tests.is_some() {
-                    let fixture_key = cache::fixture_key(package);
+                    let limits = workspace
+                        .effective_config
+                        .runtime
+                        .limits(workspace.effective_config.scan.max_file_bytes);
+                    let fixture_key = cache::fixture_key_with_limits(package, limits);
                     let cached = fixture_key
                         .as_ref()
                         .ok()
@@ -385,19 +534,27 @@ fn check(options: &Value) -> Result<Value> {
                             }
                             let _ = key;
                         }
-                        (Ok(key), None) => match run_fixtures(package, &program, options) {
-                            Ok(outcome) => {
-                                gate_passed = outcome.passed;
-                                cache.write_fixture(&key, &outcome);
-                                if !outcome.passed {
-                                    setup_errors.push(json!({"rule_id": package.qualified_id, "error": "fixture_failed", "cases": outcome.failed_cases}));
+                        (Ok(key), None) => {
+                            match run_fixtures_with_limits(
+                                package,
+                                &program,
+                                options,
+                                limits,
+                                workspace.effective_config.runtime.memory(),
+                            ) {
+                                Ok(outcome) => {
+                                    gate_passed = outcome.passed;
+                                    cache.write_fixture(&key, &outcome);
+                                    if !outcome.passed {
+                                        setup_errors.push(json!({"rule_id": package.qualified_id, "error": "fixture_failed", "cases": outcome.failed_cases}));
+                                    }
+                                }
+                                Err(error) => {
+                                    gate_passed = false;
+                                    setup_errors.push(json!({"rule_id": package.qualified_id, "error": error.to_string()}));
                                 }
                             }
-                            Err(error) => {
-                                gate_passed = false;
-                                setup_errors.push(json!({"rule_id": package.qualified_id, "error": error.to_string()}));
-                            }
-                        },
+                        }
                         (Err(error), _) => {
                             gate_passed = false;
                             setup_errors.push(json!({"rule_id": package.qualified_id, "error": error.to_string()}));
@@ -418,16 +575,27 @@ fn check(options: &Value) -> Result<Value> {
                 .push(json!({"rule_id": package.qualified_id, "error": error.to_string()})),
         }
     }
-    let optimized = options.get("optimizer").and_then(Value::as_str) != Some("off");
+    let optimized = workspace.effective_config.optimizer.mode != "off";
+    let limits = workspace
+        .effective_config
+        .runtime
+        .limits(workspace.effective_config.scan.max_file_bytes);
+    let memory = workspace.effective_config.runtime.memory();
+    let max_jobs = memory.max_workers()?;
     let jobs = options
         .get("jobs")
         .and_then(Value::as_u64)
         .map(|n| n as usize)
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get().min(3)));
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism().map_or(1, |n| n.get().min(max_jobs))
+        });
+    if jobs > max_jobs {
+        bail!("--jobs {jobs} exceeds configured memory capacity of {max_jobs} worker(s)");
+    }
     let pool = options
         .get("_worker_executable")
         .and_then(Value::as_str)
-        .map(|path| crate::worker::Pool::new(Path::new(path), jobs))
+        .map(|path| crate::worker::Pool::with_memory(Path::new(path), jobs, memory))
         .transpose()?;
     let mut execution = FileExecution {
         scopes: programs
@@ -444,7 +612,7 @@ fn check(options: &Value) -> Result<Value> {
             .map(|(package, _)| {
                 (
                     package.qualified_id.clone(),
-                    cache::raw_key(package, "", ""),
+                    cache::raw_key_with_limits(package, "", "", limits),
                 )
             })
             .collect(),
@@ -453,7 +621,7 @@ fn check(options: &Value) -> Result<Value> {
         pool,
         arena: QueryArena::new(optimized),
         optimized,
-        max_file_bytes: workspace.effective_config.scan.max_file_bytes as usize,
+        limits,
         records: Vec::new(),
         errors: setup_errors,
         relevant_files: HashSet::new(),
@@ -508,12 +676,13 @@ fn check(options: &Value) -> Result<Value> {
                 text: file.text.clone().into(),
             })
             .collect::<Vec<_>>();
-        let key = cache::repo_raw_key(
+        let key = cache::repo_raw_key_with_limits(
             package,
             &applicable
                 .iter()
                 .map(|file| (file.path.as_str(), file.digest.as_str()))
                 .collect::<Vec<_>>(),
+            limits,
         );
         let cached = cache.read_raw(&key).filter(|diagnostics| {
             let valid = diagnostics.iter().all(|diagnostic| {
@@ -549,11 +718,16 @@ fn check(options: &Value) -> Result<Value> {
                     })
                     .collect(),
                 optimized,
-                max_file_bytes: workspace.effective_config.scan.max_file_bytes as usize,
+                limits,
                 repository: true,
             })
             .and_then(|result| {
                 merge_runtime_stats(&mut runtime_stats, &result.stats["arena"]);
+                merge_runtime_stats(
+                    &mut runtime_stats["compilation"],
+                    &result.stats["compilation"],
+                );
+                merge_runtime_stats(&mut runtime_stats["transport"], &result.stats["transport"]);
                 let outcome = result
                     .results
                     .into_iter()
@@ -565,13 +739,7 @@ fn check(options: &Value) -> Result<Value> {
                 Ok(outcome.diagnostics)
             })
         } else {
-            program.execute_with_limits(
-                &sources,
-                &mut arena,
-                wt_runtime::RuntimeLimits {
-                    max_file_bytes: workspace.effective_config.scan.max_file_bytes as usize,
-                },
-            )
+            program.execute_with_limits(&sources, &mut arena, limits)
         };
         match result {
             Ok(diagnostics) => {
@@ -629,24 +797,74 @@ fn check(options: &Value) -> Result<Value> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    let waiver_file = waivers::load(&workspace.local_dir.join("waivers.json"))?;
+    let waiver_file = if preview {
+        None
+    } else {
+        waivers::load(&workspace.local_dir.join("waivers.json"))?
+    };
     let (diagnostics, suppressed, stale) =
         render_records(&records, &workspace, waiver_file.as_ref(), options)?;
     if !stale.is_empty() && bool_option(options, "strict", false)? {
         errors.push(json!({"error": "stale_waivers", "waivers": stale}));
     }
-    let review_result = reviews::load(&workspace.root).and_then(|store| {
-        reviews::apply(&workspace.root, diagnostics.clone(), &suppressed, &store)
-    });
-    let (diagnostics, reviewed, review_records) = match review_result {
-        Ok(state) => (state.diagnostics, state.reviewed, state.records),
+    let review_result = (if preview {
+        Ok(reviews::Store::default())
+    } else {
+        reviews::load(&workspace.root)
+    })
+    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &suppressed, &store));
+    let (diagnostics, reviewed, review_records, evidence_reads) = match review_result {
+        Ok(state) => (
+            state.diagnostics,
+            state.reviewed,
+            state.records,
+            Some(state.evidence_reads),
+        ),
         Err(error) => {
             errors.push(json!({"error": format!("invalid_review_state: {error}")}));
-            (diagnostics, Vec::new(), Vec::new())
+            (diagnostics, Vec::new(), Vec::new(), None)
         }
     };
     let mut notices = stale.clone();
     notices.extend(cache.notices.clone());
+    let partial_policy = selection.partial || requested.is_some() || preview;
+    let coverage_expectations = workspace.effective_config.expectations.iter().map(|entry| {
+        let rule = rule_summaries.iter().find(|rule| rule["id"] == entry.expectation.rule_id);
+        let relevant_gap = workspace.packages.iter()
+            .find(|package| package.qualified_id == entry.expectation.rule_id)
+            .is_some_and(|package| selection.gaps.iter().any(|gap| scope_accepts_path(&workspace.root, package, &gap.path)));
+        let checked_files = rule.and_then(|rule| rule["checked_files"].as_u64()).unwrap_or(0);
+        let omitted_global = !preview && options["no_global"] == true && entry.expectation.rule_id.starts_with("global/");
+        let status = if omitted_global {
+            "missing_rule"
+        } else if partial_policy {
+            "not_evaluated_partial"
+        } else if rule.is_none() {
+            "missing_rule"
+        } else if rule.is_some_and(|rule| rule["status"] == "disabled") {
+            "disabled"
+        } else if rule.is_some_and(|rule| rule["status"] == "failed") || relevant_gap {
+            "incomplete"
+        } else if rule.is_some_and(|rule| rule["status"] == "not_applicable") {
+            "not_applicable"
+        } else if checked_files < entry.expectation.minimum_files {
+            "insufficient_files"
+        } else {
+            "satisfied"
+        };
+        json!({"rule_id": entry.expectation.rule_id, "minimum_files": entry.expectation.minimum_files,
+            "reason": entry.expectation.reason, "origin": entry.origin, "completed_files": if rule.is_some_and(|rule| rule["status"] == "failed") {0} else {checked_files},
+            "source_gaps": selection.gaps.iter().filter(|gap| workspace.packages.iter().any(|package| package.qualified_id == entry.expectation.rule_id && scope_accepts_path(&workspace.root, package, &gap.path))).count(),
+            "status": status})
+    }).collect::<Vec<_>>();
+    for expectation in &coverage_expectations {
+        if !matches!(
+            expectation["status"].as_str(),
+            Some("satisfied" | "not_evaluated_partial")
+        ) {
+            errors.push(json!({"error":"coverage_expectation_unmet", "rule_id":expectation["rule_id"], "status":expectation["status"]}));
+        }
+    }
     let blocking = diagnostics
         .iter()
         .filter(|value| value["blocking"] == true)
@@ -674,10 +892,18 @@ fn check(options: &Value) -> Result<Value> {
     } else {
         "findings"
     };
+    let mut semantic_policy = config::effective_value(&workspace.effective_config);
+    semantic_policy.as_object_mut().unwrap().remove("optimizer");
+    if let Some(origins) = semantic_policy
+        .get_mut("origins")
+        .and_then(Value::as_array_mut)
+    {
+        origins.retain(|entry| entry["key"] != "optimizer.mode");
+    }
     let policy_digest = semantic_digest(
-        "WT-POLICY-2",
+        "WT-POLICY-3",
         &[
-            serde_json::to_vec(&workspace.effective_config)?.as_slice(),
+            serde_json::to_vec(&semantic_policy)?.as_slice(),
             serde_json::to_vec(
                 &workspace
                     .packages
@@ -700,10 +926,11 @@ fn check(options: &Value) -> Result<Value> {
         "exit_code": if !allow_empty && !no_work && (enabled.is_empty() || relevant_files.is_empty()) { 2 } else { exit_code },
         "complete": complete && (allow_empty || (!enabled.is_empty() && (!relevant_files.is_empty() || no_work))),
         "root": workspace.root,
-        "scope": {"partial": selection.partial, "include_ignored": options.get("include_ignored").and_then(Value::as_bool).unwrap_or(false), "host_ignores": workspace.effective_config.scan.honor_git_local_excludes && !options.get("no_host_ignores").and_then(Value::as_bool).unwrap_or(false)},
+        "scope": {"partial": partial_policy, "include_ignored": options.get("include_ignored").and_then(Value::as_bool).unwrap_or(false), "host_ignores": workspace.effective_config.scan.honor_git_local_excludes && !options.get("no_host_ignores").and_then(Value::as_bool).unwrap_or(false)},
         "changed_base": selection.changed_base,
         "policy_digest": policy_digest,
         "effective_policy": workspace.effective_config,
+        "coverage_expectations": coverage_expectations,
         "coordinate_encoding": "unicode-scalar-columns",
         "diagnostics": diagnostics,
         "suppressed": suppressed,
@@ -717,11 +944,20 @@ fn check(options: &Value) -> Result<Value> {
         "gaps": relevant_gaps,
     });
     if bool_option(options, "stats", false)? {
+        runtime_stats["admitted_jobs"] = json!(jobs);
+        runtime_stats["worker_reservation_bytes"] = json!(memory.worker_bytes);
+        runtime_stats["parent_reservation_bytes"] = json!(memory.parent_bytes);
+        runtime_stats["total_scheduling_bytes"] = json!(memory.total_bytes);
         runtime_stats["source_reads"] = json!(selection.source_reads);
         runtime_stats["snapshot_reads"] = json!(selection.source_reads);
         runtime_stats["bytes_hashed"] = json!(selection.bytes_hashed);
         runtime_stats["relevant_rule_file_pairs"] = json!(checked.values().sum::<usize>());
-        result["stats"] = json!({"runtime": runtime_stats, "cache": cache.stats_value()});
+        result["stats"] = json!({"runtime": runtime_stats, "cache": cache.stats_value(),
+            "measurement":{"elapsed_ms":started.elapsed().as_millis(),
+                "review_evidence_reads":evidence_reads.map_or(json!("not_measured"), |n| json!(n)), "peak_rss_bytes":"not_measured"}});
+    }
+    if preview {
+        result["preview"] = json!(true);
     }
     Ok(result)
 }
@@ -734,7 +970,7 @@ struct FileExecution<'a> {
     pool: Option<crate::worker::Pool>,
     arena: QueryArena,
     optimized: bool,
-    max_file_bytes: usize,
+    limits: wt_runtime::RuntimeLimits,
     records: Vec<Record>,
     errors: Vec<Value>,
     relevant_files: HashSet<String>,
@@ -835,9 +1071,7 @@ impl FileExecution<'_> {
                             text: file.text.clone().into(),
                         }],
                         &mut self.arena,
-                        wt_runtime::RuntimeLimits {
-                            max_file_bytes: self.max_file_bytes,
-                        },
+                        self.limits,
                     );
                     match result {
                         Ok(diagnostics) => {self.cache.write_raw(&key,&diagnostics); add_records(&mut self.records,package,diagnostics,std::slice::from_ref(file));}
@@ -857,7 +1091,7 @@ impl FileExecution<'_> {
                         text: file.text.clone(),
                     }],
                     optimized: self.optimized,
-                    max_file_bytes: self.max_file_bytes,
+                    limits: self.limits,
                     repository: false,
                 });
                 pending.push((file, missing));
@@ -868,6 +1102,14 @@ impl FileExecution<'_> {
                 match result {
                     Ok(result) => {
                         merge_runtime_stats(&mut self.stats, &result.stats["arena"]);
+                        merge_runtime_stats(
+                            &mut self.stats["compilation"],
+                            &result.stats["compilation"],
+                        );
+                        merge_runtime_stats(
+                            &mut self.stats["transport"],
+                            &result.stats["transport"],
+                        );
                         for (package, key) in missing {
                             let outcome = result
                                 .results
@@ -912,7 +1154,7 @@ fn plan(options: &Value) -> Result<Value> {
         }
         rules.push(json!({"id": package.qualified_id, "digest": package.digest, "scope": package.manifest.scope, "plan": program.plan()}));
     }
-    let optimized = options.get("optimizer").and_then(Value::as_str) != Some("off");
+    let optimized = workspace.effective_config.optimizer.mode != "off";
     let queries = queries
         .into_values()
         .enumerate()
@@ -941,7 +1183,7 @@ fn plan(options: &Value) -> Result<Value> {
         "plan",
         "pass",
         0,
-        json!({"rules": rules, "queries":queries,"plan_digest":plan_digest,"optimizer": options.get("optimizer").and_then(Value::as_str).unwrap_or("auto"), "executed": false}),
+        json!({"rules": rules, "queries":queries,"plan_digest":plan_digest,"optimizer": workspace.effective_config.optimizer.mode, "executed": false}),
     ))
 }
 
@@ -1008,7 +1250,16 @@ fn test(options: &Value) -> Result<Value> {
     let mut incomplete = false;
     for package in selected {
         let program = wt_runtime::compile(&package.manifest_value, &package.source)?;
-        match run_fixtures(package, &program, options) {
+        match run_fixtures_with_limits(
+            package,
+            &program,
+            options,
+            workspace
+                .effective_config
+                .runtime
+                .limits(workspace.effective_config.scan.max_file_bytes),
+            workspace.effective_config.runtime.memory(),
+        ) {
             Ok(outcome) => {
                 failed |= !outcome.passed;
                 outcomes.push(json!({"id": package.qualified_id, "passed": outcome.passed, "cases": outcome.cases, "failed_cases": outcome.failed_cases}));
@@ -1065,7 +1316,16 @@ fn set_mode(options: &Value) -> Result<Value> {
         if !enforcement_evidence(package) {
             bail!("enforced rule requires positive and nonempty negative fixtures")
         }
-        let outcome = run_fixtures(package, &program, options)?;
+        let outcome = run_fixtures_with_limits(
+            package,
+            &program,
+            options,
+            workspace
+                .effective_config
+                .runtime
+                .limits(workspace.effective_config.scan.max_file_bytes),
+            workspace.effective_config.runtime.memory(),
+        )?;
         if !outcome.passed {
             bail!("cannot enforce a failing fixture suite")
         }
@@ -1113,18 +1373,17 @@ fn explain(options: &Value) -> Result<Value> {
         "explain",
         "pass",
         0,
-        json!({"selection": selection.coverage, "gaps": selection.gaps, "rules": rules}),
+        json!({"selection": selection.coverage, "gaps": selection.gaps, "rules": rules,
+            "coverage_expectations": workspace.effective_config.expectations}),
     ))
 }
 
 fn show_config(options: &Value) -> Result<Value> {
     let workspace = discovery::discover(options)?;
-    Ok(envelope(
-        "config",
-        "pass",
-        0,
-        config::effective_value(&workspace.effective_config),
-    ))
+    let mut fields = config::effective_value(&workspace.effective_config);
+    fields["configured"] = json!({"global":workspace.global_config,"local":workspace.local_config});
+    fields["effective"] = config::effective_value(&workspace.effective_config);
+    Ok(envelope("config", "pass", 0, fields))
 }
 
 fn clear_cache(_options: &Value) -> Result<Value> {
@@ -1140,17 +1399,86 @@ fn schema(options: &Value) -> Result<Value> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("schema name is required"))?;
+    if matches!(name.as_str(), "rule" | "submission") {
+        return crate::package_schema(
+            &name,
+            options
+                .get("schema_version")
+                .and_then(Value::as_u64)
+                .unwrap_or(3),
+        );
+    }
     let schema = match name.as_str() {
         "rule" => include_str!("../../../schemas/rule.schema.json"),
         "submission" => include_str!("../../../schemas/submission.schema.json"),
         "tests" => include_str!("../../../schemas/tests.schema.json"),
+        "config" if options.get("schema_version").and_then(Value::as_u64) == Some(2) => {
+            include_str!("../../../schemas/config-v2.schema.json")
+        }
         "config" => include_str!("../../../schemas/config.schema.json"),
+        "result" if options.get("schema_version").and_then(Value::as_u64) != Some(2) => {
+            include_str!("../../../schemas/result-v3.schema.json")
+        }
         "result" => include_str!("../../../schemas/result.schema.json"),
         "plan" => include_str!("../../../schemas/plan.schema.json"),
         "waivers" => include_str!("../../../schemas/waivers.schema.json"),
+        "review" => include_str!("../../../schemas/review.schema.json"),
+        "capabilities" => include_str!("../../../schemas/capabilities.schema.json"),
         _ => bail!("unknown schema {name:?}"),
     };
     crate::parse_json(schema)
+}
+
+const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit schema-3 JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
+const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
+const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1, regex.v1 and jsx.v1 are explicit capabilities. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
+const MIGRATION_GUIDE: &str = "Schema-2 rule packages remain readable. A deliberate wt update converts prose into rule.md and formats check.wt while preserving fixtures. Configuration schema 3 adds coverage.expectations; schema 2 remains readable. Never infer an acceptance from an old waiver. Recheck review evidence after package edits.";
+
+fn guide(options: &Value) -> Result<Value> {
+    let topic = options
+        .get("topic")
+        .and_then(Value::as_str)
+        .unwrap_or("author");
+    let text = match topic {
+        "author" => AUTHOR_GUIDE,
+        "review" => REVIEW_GUIDE,
+        "language" => LANGUAGE_GUIDE,
+        "migration" => MIGRATION_GUIDE,
+        _ => bail!(
+            "unknown installed guide topic {topic:?}; choose author, review, language or migration"
+        ),
+    };
+    Ok(envelope(
+        "guide",
+        "pass",
+        0,
+        json!({"topic":topic,"text":text,
+        "digest":crate::digest::digest_bytes(text.as_bytes())}),
+    ))
+}
+
+fn capabilities() -> Result<Value> {
+    Ok(
+        json!({"schema_version":1,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
+        "specification_profile":{"target_revision":3,"qualification":"not_yet_qualified"},
+        "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_v3","candidate_preview","configurable_logical_budgets"],
+        "schemas":{"rule":[2,3],"submission":[2,3],"config":[2,3],"tests":[2],"review":[1],"waivers":[2],"result":[2,3],"plan":[2],"capabilities":[1]},
+        "language":"wt-rule-1", "helpers":["text.v1","regex.v1","jsx.v1"],
+        "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
+        "guide_digests":{
+            "author":crate::digest::digest_bytes(AUTHOR_GUIDE.as_bytes()),
+            "review":crate::digest::digest_bytes(REVIEW_GUIDE.as_bytes()),
+            "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes()),
+            "migration":crate::digest::digest_bytes(MIGRATION_GUIDE.as_bytes())
+        },
+        "configuration_keys":["scan.respect_gitignore","scan.honor_git_local_excludes","scan.include_hidden","scan.max_file_bytes","scan.exclude","runtime.file_steps","runtime.file_native_bytes","runtime.repository_steps","runtime.repository_native_bytes","runtime.worker_memory_bytes","runtime.parent_memory_bytes","runtime.total_memory_bytes","optimizer.mode","rules.mode_overrides","coverage.expectations"],
+        "check_options":{"optimizer":["auto","off"],"maximum_jobs":3,"maximum_file_bytes":67108864},
+        "resource_support":{"platform":std::env::consts::OS,"worker_processes":true,"hard_worker_memory_limit":cfg!(target_os="linux"),
+            "worker_reservation_bytes":crate::worker::WORKER_MEMORY_RESERVATION_BYTES,
+            "parent_reservation_bytes":crate::worker::PARENT_MEMORY_RESERVATION_BYTES,
+            "combined_scheduling_budget_bytes":crate::worker::MEMORY_BUDGET_BYTES,
+            "runtime_ceilings":crate::config::RuntimeConfig::default()}}),
+    )
 }
 
 fn required_submission_value(options: &Value) -> Result<Value> {
@@ -1554,7 +1882,10 @@ struct LockGuard {
 }
 
 fn acquire_lock(parent: &Path, id: &str) -> Result<LockGuard> {
-    let lock_path = parent.join(format!(".{id}.lock"));
+    let lock_path = crate::coordination::lock_path(
+        "package",
+        &format!("{}:{id}", parent.canonicalize()?.display()),
+    )?;
     use std::fs::OpenOptions;
     let file = OpenOptions::new()
         .read(true)
@@ -1603,15 +1934,19 @@ fn enforcement_evidence(package: &RulePackage) -> bool {
     })
 }
 
-fn run_fixtures(
+fn run_fixtures_with_limits(
     package: &RulePackage,
     program: &wt_runtime::Program,
     options: &Value,
+    limits: wt_runtime::RuntimeLimits,
+    memory: crate::worker::MemoryProfile,
 ) -> Result<fixtures::TestOutcome> {
     let Some(executable) = options.get("_worker_executable").and_then(Value::as_str) else {
-        return fixtures::run_suite(package, program);
+        return fixtures::run_suite_with(package, |files| {
+            program.execute_with_limits(files, &mut QueryArena::new(true), limits)
+        });
     };
-    let mut pool = crate::worker::Pool::new(Path::new(executable), 1)?;
+    let mut pool = crate::worker::Pool::with_memory(Path::new(executable), 1, memory)?;
     fixtures::run_suite_with(package, |files| {
         let result = pool.execute(crate::worker::WorkerRequest {
             rules: vec![worker_rule(package)],
@@ -1623,7 +1958,7 @@ fn run_fixtures(
                 })
                 .collect(),
             optimized: true,
-            max_file_bytes: 4 * 1024 * 1024,
+            limits,
             repository: package.manifest.execution == "repository",
         })?;
         let outcome = result
@@ -1703,7 +2038,8 @@ fn review(options: &Value) -> Result<Value> {
         }
     }
     check_options.insert("no_cache".to_owned(), json!(true));
-    let checked = check(&Value::Object(check_options))?;
+    let check_options = Value::Object(check_options);
+    let checked = check(&check_options)?;
     if checked["complete"] != true {
         bail!("cannot record review after incomplete analysis");
     }
@@ -1727,5 +2063,111 @@ fn review(options: &Value) -> Result<Value> {
     if finding["rule_digest"] != current.digest {
         bail!("rule changed after check");
     }
-    reviews::record(&workspace.root, finding, options)
+    reviews::record(&workspace.root, finding, options, || {
+        // Re-evaluate this rule's full source scope under the per-record lock.
+        // Other independent rules were validated by the first check. Repository
+        // rules still rehash their entire authorized input inventory.
+        let mut recheck = check_options.clone();
+        recheck["rules"] = json!([finding["rule_id"]]);
+        let fresh = check(&recheck)?;
+        if fresh["complete"] != true {
+            bail!("review evidence became incomplete before publication");
+        }
+        let current = fresh["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(fresh["reviewed"].as_array().into_iter().flatten())
+            .filter(|candidate| candidate["finding_id"] == id)
+            .collect::<Vec<_>>();
+        if current.len() != 1 || current[0]["evidence_digest"] != finding["evidence_digest"] {
+            bail!("review evidence changed before publication; run check again");
+        }
+        Ok(())
+    })
+}
+
+fn inspect(options: &Value) -> Result<Value> {
+    let id = required_string(options, "finding_id")?;
+    let mut check_options = Map::new();
+    for key in COMMON_OPTIONS
+        .iter()
+        .copied()
+        .chain(["no_global", "no_host_ignores"])
+    {
+        if let Some(value) = options.get(key) {
+            check_options.insert(key.to_owned(), value.clone());
+        }
+    }
+    check_options.insert("no_cache".to_owned(), json!(true));
+    let checked = check(&Value::Object(check_options))?;
+    if checked["complete"] != true {
+        bail!(
+            "cannot inspect current evidence after incomplete analysis: {}",
+            checked["errors"]
+        );
+    }
+    let findings = checked["diagnostics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(checked["reviewed"].as_array().into_iter().flatten())
+        .chain(checked["suppressed"].as_array().into_iter().flatten())
+        .filter(|finding| finding["finding_id"] == id)
+        .collect::<Vec<_>>();
+    if findings.len() > 1 {
+        bail!("ambiguous finding identity");
+    }
+    let workspace = discovery::discover(options)?;
+    let previous = reviews::stored_detail(&workspace.root, &id)?;
+    if findings.is_empty() && previous.is_none() {
+        bail!("unknown finding ID {id}");
+    }
+    let current = findings.first().copied();
+    let rule_id = current.map(|finding| &finding["rule_id"]).or_else(|| {
+        previous
+            .as_ref()
+            .map(|previous| &previous["record"]["rule_id"])
+    });
+    let contract = workspace
+        .packages
+        .iter()
+        .find(|package| Some(package.qualified_id.as_str()) == rule_id.and_then(Value::as_str))
+        .map(|package| {
+            if current.is_some_and(|finding| finding["rule_digest"] != package.digest) {
+                bail!("rule package changed while inspecting; retry with fresh evidence")
+            }
+            rule::export_value(package)
+        })
+        .transpose()?
+        .and_then(|value| value["documentation"]["source"].as_str().map(str::to_owned));
+    if current.is_some()
+        && !workspace
+            .packages
+            .iter()
+            .any(|package| Some(package.qualified_id.as_str()) == rule_id.and_then(Value::as_str))
+    {
+        bail!("rule package disappeared while inspecting; retry with fresh evidence");
+    }
+    let reasons = current
+        .and_then(|finding| finding["review_state"]["reasons"].as_array().cloned())
+        .unwrap_or_default();
+    let previous_diff = previous
+        .as_ref()
+        .map(|previous| crate::inspection::previous_diff(&workspace.root, previous, current))
+        .transpose()?
+        .flatten();
+    Ok(envelope(
+        "inspect",
+        "pass",
+        0,
+        json!({
+            "finding_id": id, "observation": if current.is_some() {"present"} else {"not_observed"},
+            "finding": current, "previous": previous, "rule_markdown": contract,
+            "stale_reasons": reasons,
+            "previous_content": if previous_diff.is_some() {"verified_local_vcs_object"} else {"previous_content_unavailable"},
+            "source_diff": previous_diff,
+            "coverage": checked["rules"]
+        }),
+    ))
 }

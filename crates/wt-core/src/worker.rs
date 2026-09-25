@@ -9,19 +9,47 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wt_runtime::{Program, QueryArena, RawDiagnostic, RuntimeLimits, SourceFile};
 
 const MAX_PROTOCOL_BYTES: usize = 128 * 1024 * 1024;
 const COMPILED_CACHE_BYTES: usize = 256 * 1024 * 1024;
-const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
-const WORKER_MEMORY_RESERVATION_BYTES: usize = 256 * 1024 * 1024;
-const PARENT_MEMORY_RESERVATION_BYTES: usize = 256 * 1024 * 1024;
-const MAX_WORKERS: usize =
-    (MEMORY_BUDGET_BYTES - PARENT_MEMORY_RESERVATION_BYTES) / WORKER_MEMORY_RESERVATION_BYTES;
+pub(crate) const MEMORY_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
+pub(crate) const WORKER_MEMORY_RESERVATION_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const PARENT_MEMORY_RESERVATION_BYTES: usize = 256 * 1024 * 1024;
 const INVOCATION_TIMEOUT: Duration = Duration::from_secs(2);
 const REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryProfile {
+    pub worker_bytes: usize,
+    pub parent_bytes: usize,
+    pub total_bytes: usize,
+}
+
+impl Default for MemoryProfile {
+    fn default() -> Self {
+        Self {
+            worker_bytes: WORKER_MEMORY_RESERVATION_BYTES,
+            parent_bytes: PARENT_MEMORY_RESERVATION_BYTES,
+            total_bytes: MEMORY_BUDGET_BYTES,
+        }
+    }
+}
+
+impl MemoryProfile {
+    pub fn max_workers(self) -> Result<usize> {
+        if !(WORKER_MEMORY_RESERVATION_BYTES..=512 * 1024 * 1024).contains(&self.worker_bytes)
+            || !(PARENT_MEMORY_RESERVATION_BYTES..=512 * 1024 * 1024).contains(&self.parent_bytes)
+            || self.total_bytes > MEMORY_BUDGET_BYTES
+            || self.total_bytes < self.parent_bytes.saturating_add(self.worker_bytes)
+        {
+            bail!("runtime memory reservations must admit one worker under the 1 GiB ceiling");
+        }
+        Ok((self.total_bytes - self.parent_bytes) / self.worker_bytes)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkerRule {
@@ -41,7 +69,7 @@ pub struct WorkerRequest {
     pub rules: Vec<WorkerRule>,
     pub files: Vec<SourceFileWire>,
     pub optimized: bool,
-    pub max_file_bytes: usize,
+    pub limits: RuntimeLimits,
     pub repository: bool,
 }
 
@@ -68,14 +96,23 @@ struct WorkerRuntime {
     compiled: HashMap<String, CachedProgram>,
     pattern_reservations: HashMap<String, (usize, usize)>,
     compiled_bytes: usize,
+    compiled_count: u64,
+    memory: MemoryProfile,
 }
 
 impl WorkerRuntime {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_memory(MemoryProfile::default())
+    }
+
+    fn with_memory(memory: MemoryProfile) -> Self {
         Self {
             compiled: HashMap::new(),
             pattern_reservations: HashMap::new(),
             compiled_bytes: 0,
+            compiled_count: 0,
+            memory,
         }
     }
 
@@ -188,6 +225,7 @@ impl WorkerRuntime {
                 pattern_reservations,
             },
         );
+        self.compiled_count += 1;
         Ok(program)
     }
 
@@ -195,7 +233,7 @@ impl WorkerRuntime {
         if request.rules.is_empty() {
             bail!("worker request requires at least one rule");
         }
-        if request.max_file_bytes == 0 || request.max_file_bytes > MAX_FILE_BYTES {
+        if request.limits.max_file_bytes == 0 || request.limits.max_file_bytes > MAX_FILE_BYTES {
             bail!("worker max_file_bytes must be between 1 and {MAX_FILE_BYTES}");
         }
         let files = request
@@ -207,9 +245,9 @@ impl WorkerRuntime {
             })
             .collect::<Vec<_>>();
         let mut arena = QueryArena::new(request.optimized);
-        let limits = RuntimeLimits {
-            max_file_bytes: request.max_file_bytes,
-        };
+        let limits = request.limits;
+        let compilation_started = Instant::now();
+        let compiled_before = self.compiled_count;
         let mut states = request
             .rules
             .into_iter()
@@ -227,6 +265,7 @@ impl WorkerRuntime {
                 }
             })
             .collect::<Vec<_>>();
+        let compilation_elapsed_ms = compilation_started.elapsed().as_millis();
 
         if files.is_empty() {
             for state in &mut states {
@@ -259,9 +298,11 @@ impl WorkerRuntime {
             "compiled_pattern_entries": self.pattern_reservations.len(),
             "compiled_cache_bytes": self.compiled_bytes,
             "compiled_cache_budget_bytes": COMPILED_CACHE_BYTES,
-            "memory_budget_bytes": MEMORY_BUDGET_BYTES,
-            "worker_memory_reservation_bytes": WORKER_MEMORY_RESERVATION_BYTES,
-            "parent_memory_reservation_bytes": PARENT_MEMORY_RESERVATION_BYTES,
+            "memory_budget_bytes": self.memory.total_bytes,
+            "worker_memory_reservation_bytes": self.memory.worker_bytes,
+            "parent_memory_reservation_bytes": self.memory.parent_bytes,
+            "compilation": {"programs_compiled":self.compiled_count - compiled_before,
+                "elapsed_ms":compilation_elapsed_ms},
         });
         Ok(WorkerResult {
             results: states
@@ -367,12 +408,18 @@ impl Drop for HardWatchdog {
 /// JSON response per line. It never opens source paths; all source bytes arrive
 /// in the request.
 pub fn serve() -> Result<()> {
-    apply_worker_memory_limit()?;
+    let memory = MemoryProfile {
+        worker_bytes: worker_env("WT_WORKER_MEMORY_BYTES", WORKER_MEMORY_RESERVATION_BYTES)?,
+        parent_bytes: worker_env("WT_PARENT_MEMORY_BYTES", PARENT_MEMORY_RESERVATION_BYTES)?,
+        total_bytes: worker_env("WT_TOTAL_MEMORY_BYTES", MEMORY_BUDGET_BYTES)?,
+    };
+    memory.max_workers()?;
+    apply_worker_memory_limit(memory.worker_bytes)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut input = BufReader::new(stdin.lock());
     let mut output = BufWriter::new(stdout.lock());
-    let mut runtime = WorkerRuntime::new();
+    let mut runtime = WorkerRuntime::with_memory(memory);
 
     while let Some(line) = read_bounded_line(&mut input, MAX_PROTOCOL_BYTES)? {
         let request: WorkerRequest =
@@ -392,9 +439,19 @@ pub fn serve() -> Result<()> {
     Ok(())
 }
 
+fn worker_env(key: &str, default: usize) -> Result<usize> {
+    match std::env::var(key) {
+        Ok(value) => value
+            .parse::<usize>()
+            .with_context(|| format!("invalid {key}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(anyhow!("invalid {key}: {error}")),
+    }
+}
+
 #[cfg(target_os = "linux")]
-fn apply_worker_memory_limit() -> Result<()> {
-    let limit = WORKER_MEMORY_RESERVATION_BYTES as libc::rlim_t;
+fn apply_worker_memory_limit(bytes: usize) -> Result<()> {
+    let limit = bytes as libc::rlim_t;
     let resource_limit = libc::rlimit {
         rlim_cur: limit,
         rlim_max: limit,
@@ -408,7 +465,7 @@ fn apply_worker_memory_limit() -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn apply_worker_memory_limit() -> Result<()> {
+fn apply_worker_memory_limit(_bytes: usize) -> Result<()> {
     // Darwin address-space reservations are not comparable to Linux RLIMIT_AS,
     // and Windows requires a separate Job Object implementation. Scheduling and
     // logical limits still apply; no hard OS memory limit is claimed here.
@@ -491,9 +548,12 @@ impl Drop for ProcessWatchdog {
 }
 
 impl WorkerProcess {
-    fn spawn(executable: &Path) -> Result<Self> {
+    fn spawn(executable: &Path, memory: MemoryProfile) -> Result<Self> {
         let mut child = Command::new(executable)
             .arg("__wt-worker")
+            .env("WT_WORKER_MEMORY_BYTES", memory.worker_bytes.to_string())
+            .env("WT_PARENT_MEMORY_BYTES", memory.parent_bytes.to_string())
+            .env("WT_TOTAL_MEMORY_BYTES", memory.total_bytes.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -572,7 +632,11 @@ impl WorkerProcess {
             Ok(result) => result.context("worker response reader failed")?,
             Err(_) => bail!("worker response channel disconnected"),
         };
-        serde_json::from_slice(&response).context("invalid worker response")
+        let mut result: WorkerResult =
+            serde_json::from_slice(&response).context("invalid worker response")?;
+        result.stats["transport"] =
+            serde_json::json!({"request_bytes":encoded.len(),"response_bytes":response.len()});
+        Ok(result)
     }
 }
 
@@ -587,21 +651,23 @@ impl Drop for WorkerProcess {
 
 struct WorkerSlot {
     executable: PathBuf,
+    memory: MemoryProfile,
     process: Option<WorkerProcess>,
 }
 
 impl WorkerSlot {
-    fn new(executable: PathBuf) -> Result<Self> {
-        let process = WorkerProcess::spawn(&executable)?;
+    fn new(executable: PathBuf, memory: MemoryProfile) -> Result<Self> {
+        let process = WorkerProcess::spawn(&executable, memory)?;
         Ok(Self {
             executable,
+            memory,
             process: Some(process),
         })
     }
 
     fn execute(&mut self, request: &WorkerRequest) -> Result<WorkerResult> {
         if self.process.is_none() {
-            self.process = Some(WorkerProcess::spawn(&self.executable)?);
+            self.process = Some(WorkerProcess::spawn(&self.executable, self.memory)?);
         }
         let result = self
             .process
@@ -626,16 +692,23 @@ impl Pool {
     /// the parent and 256 MiB per worker. This makes no platform-specific RSS
     /// claim.
     pub fn new(executable: &Path, jobs: usize) -> Result<Self> {
+        Self::with_memory(executable, jobs, MemoryProfile::default())
+    }
+
+    pub fn with_memory(executable: &Path, jobs: usize, memory: MemoryProfile) -> Result<Self> {
         if jobs == 0 {
             bail!("worker pool requires at least one job");
         }
-        if jobs > MAX_WORKERS {
-            bail!("worker pool supports at most {MAX_WORKERS} jobs under the 1 GiB memory budget");
+        let admitted = memory.max_workers()?;
+        if jobs > admitted {
+            bail!(
+                "worker pool supports at most {admitted} jobs under the configured memory budget"
+            );
         }
         let count = jobs;
         let mut workers = Vec::with_capacity(count);
         for _ in 0..count {
-            workers.push(Mutex::new(WorkerSlot::new(executable.to_owned())?));
+            workers.push(Mutex::new(WorkerSlot::new(executable.to_owned(), memory)?));
         }
         Ok(Self {
             workers,

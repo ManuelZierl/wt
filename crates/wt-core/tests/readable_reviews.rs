@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::fs;
+use std::process::Command;
 use tempfile::{tempdir, TempDir};
 use wt_core::{digest_text, dispatch};
 
@@ -144,6 +145,81 @@ fn copied_occurrences_do_not_inherit_an_acceptance() {
 }
 
 #[test]
+fn interrupted_hidden_revision_fails_closed_without_erasing_raw_findings() {
+    let repo = Repo::new();
+    repo.install("enforced");
+    let finding = repo.check()["diagnostics"][0].clone();
+    assert_eq!(repo.accept(&finding)["exit_code"], 0);
+    let occurrence = repo.root.path().join(".wt/reviews").join(
+        finding["finding_id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:"),
+    );
+    fs::create_dir(occurrence.join(".pending-interrupted")).unwrap();
+    let checked = repo.check();
+    assert_eq!(checked["exit_code"], 2, "{checked}");
+    assert_eq!(
+        checked["diagnostics"][0]["finding_id"],
+        finding["finding_id"]
+    );
+    assert!(checked["errors"]
+        .to_string()
+        .contains("invalid_review_state"));
+    assert_eq!(repo.run("reviews", json!({}))["exit_code"], 2);
+}
+
+#[test]
+fn inspect_uses_only_a_digest_verified_local_vcs_object_for_prior_source() {
+    let repo = Repo::new();
+    let git = |args: &[&str]| {
+        let result = Command::new("git")
+            .arg("-C")
+            .arg(repo.root.path())
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(result.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "source.txt"]);
+    git(&[
+        "-c",
+        "user.name=WT test",
+        "-c",
+        "user.email=wt@example.invalid",
+        "commit",
+        "-qm",
+        "Initial source",
+    ]);
+    repo.install("advisory");
+    let finding = repo.check()["diagnostics"][0].clone();
+    assert_eq!(repo.accept(&finding)["exit_code"], 0);
+    fs::write(
+        repo.root.path().join("source.txt"),
+        "bad\nchanged context\n",
+    )
+    .unwrap();
+    let inspected = repo.run(
+        "inspect",
+        json!({"finding_id":finding["finding_id"],"output_version":3}),
+    );
+    assert_eq!(inspected["exit_code"], 0, "{inspected}");
+    assert_eq!(
+        inspected["data"]["previous_content"],
+        "verified_local_vcs_object"
+    );
+    assert!(inspected["data"]["source_diff"]
+        .as_str()
+        .unwrap()
+        .contains("+changed context"));
+    assert_eq!(
+        inspected["data"]["stale_reasons"],
+        json!(["owner_file_changed"])
+    );
+}
+
+#[test]
 fn watch_changes_and_rule_contract_changes_require_revalidation() {
     let repo = Repo::new();
     repo.install("enforced");
@@ -268,13 +344,11 @@ fn repository_review_evidence_includes_additions_to_the_authorized_input_set() {
     let mut rule = shown["rule"].clone();
     rule["execution"] = json!("repository");
     rule["code"]["source"]=json!("for source_file in repo.files() { for m in rx::find_all(source_file, \"bad\") { emit(m.span, \"hit\"); } }");
-    assert_eq!(
-        repo.run(
-            "update",
-            json!({"id":"local/review-marker","expect_hash":shown["digest"],"submission":rule})
-        )["exit_code"],
-        0
+    let updated = repo.run(
+        "update",
+        json!({"id":"local/review-marker","expect_hash":shown["digest"],"submission":rule}),
     );
+    assert_eq!(updated["exit_code"], 0, "{updated}");
     let finding = repo.check()["diagnostics"][0].clone();
     assert_eq!(repo.accept(&finding)["exit_code"], 0);
     assert_eq!(repo.check()["exit_code"], 0);

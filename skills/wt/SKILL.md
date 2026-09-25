@@ -9,9 +9,9 @@ Use WT for deterministic, local repository knowledge. WT is not an LLM reviewer:
 
 ## Contract First
 
-Check `wt --version`, `wt --help`, and `wt schema submission` against the installed executable. `watchtower` is the alternate executable name, useful where `wt` names Windows Terminal. If neither executable is installed, report that prerequisite before attempting checks.
+Run `wt capabilities --format json` and `wt guide author` against the installed executable before authoring. Verify the reported schema, protocol and guide digests match the binary you intend to use. `watchtower` is the alternate executable name, useful where `wt` names Windows Terminal. If neither executable is installed, report that prerequisite before attempting checks.
 
-This skill is portable: the repository being checked need not contain WT's own sources. Use [the bundled WRL1 reference](references/wrl1.md) and the installed command's schemas. When a WT source checkout is available, its `docs/cli.md`, `docs/runtime-configuration.md`, and `spec.md` provide additional detail. The specification describes the intended contract; verify a capability against the executable before relying on it.
+This skill is portable: the repository being checked need not contain WT's own sources. Use the installed `wt guide language` and installed command's schemas. When a WT source checkout is available, its `docs/cli.md`, `docs/runtime-configuration.md`, and `watchtower-spec-v3.md` provide additional detail. Verify a capability against the installed executable before relying on it; this skill may describe a newer version than the binary.
 
 ## Inspect Before Editing
 
@@ -26,7 +26,7 @@ wt schema submission
 wt schema tests
 ```
 
-`config` shows effective values and origins. `list` shows declared/effective modes, scope, test availability, and digests. `show` exports a self-contained rule with detector and fixture content. `plan` inspects the compiled plan without scanning application source:
+`config` shows configured and invocation-effective values and origins. `list` shows declared/effective modes, scope, test availability, and digests. `show` returns the self-contained rule at `data.rule` with its same-read package hash at `data.digest` in result protocol 3. `plan` inspects the compiled plan without scanning application source:
 
 ```sh
 wt plan --rule local/rule-id --format json
@@ -34,7 +34,9 @@ wt plan --rule local/rule-id --format json
 
 Use `--no-global` only when the intended policy is local-only. Otherwise the default combines global and local rules.
 
-## Author A Narrow Rule
+## Choose Protection, Then Author
+
+Use an existing linter, behavioral regression test, type restriction, or API redesign when it preserves the lesson more reliably than a WT detector. A detector need not be invented for every fix. When WT is useful, distinguish a source-level recognition claim from the contextual question the reviewer must answer. Acceptable occurrences of a deliberate review pattern stay raw-positive.
 
 Prefer a small, documented `text.v1` WRL1 detector. `check.wt` is a top-level statement body with an implicit read-only `file`; it is not `fn check(file)` and it is not arbitrary Rhai. Rhai is only the current backend for the restricted `wt-rule-1` contract.
 
@@ -56,12 +58,11 @@ Keep the rule's limitation honest. A `violation` identifies a prohibited form; a
 
 ## Validate, Create, Test, Check
 
-Validate a submission without writing it, then create it through stdin. `new` accepts exactly one source: positional JSON, `--stdin`, or `--file`.
+`new` already validates, formats and executes supplied fixtures. For an installed rule, use `wt check --submission PATH` to scan a self-contained candidate without installing it. `new` accepts exactly one source: positional JSON, `--stdin`, or `--file`.
 
 ```sh
-wt validate --file submission.json --format json
+wt check --submission submission.json --format json
 wt new --stdin --format json < submission.json
-wt test local/rule-id --format json
 wt check --format json
 ```
 
@@ -80,14 +81,15 @@ Use `--optimizer off --no-cache` for the unshared correctness reference path whe
 - `review` diagnostics block under enforced mode just like violations.
 - Runtime or fixture failures and analysis gaps are incomplete results, not no-match results.
 
-`--changed` and narrowed paths are partial coverage. Record that fact and do not present the result as a repository-wide proof. `--include-ignored` changes only Git-ignore filtering. `--show-suppressed` exposes waiver-suppressed findings; stale waivers remain actionable, and waivers do not excuse analysis gaps.
+`--changed`, `--rule`, candidate previews and narrowed paths are partial coverage. Schema-3 `coverage.expectations` require each selected enabled and applicable qualified rule to complete the declared minimum number of eligible files in a full check. `--allow-empty` never bypasses an expectation. `--include-ignored` changes only Git-ignore filtering. `--show-reviewed` and `--show-suppressed` expand human output; stale waivers remain actionable, and waivers do not excuse analysis gaps.
 
 ## Update Safely
 
-Use the JSON `show` response's `rule` field as the self-contained submission, retaining all existing tests and fixture content. Do not submit the surrounding command envelope. Edit the submission and use the `digest` returned by that same `show` response to update atomically:
+Use the JSON `show` response's `data.rule` field as the self-contained submission, retaining all existing tests and fixture content. Do not submit the surrounding command envelope. Edit the submission and use `data.digest` from that same `show` response to preview and then update atomically:
 
 ```sh
 wt list --format json
+wt update local/rule-id --stdin --expect-hash sha256:... --preview --format json < updated-submission.json
 wt update local/rule-id --stdin --expect-hash sha256:... --format json < updated-submission.json
 ```
 
@@ -117,19 +119,26 @@ Use `wt fmt --check` for existing local scripts. `wt check` never reformats sour
 
 A `review` finding means **inspect this pattern**, not **this is a proven bug**.
 An acceptable occurrence is still a raw positive. Keep that detector fixture.
-After actual contextual review, record one decision with `wt review FINDING_ID
---decision acceptable --expect-evidence HASH --reason-file rationale.md` using the
+After actual contextual review, record one decision with
+`wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file rationale.md` using the
 IDs from the reviewed check. The command rejects stale evidence. Never bulk-accept
 findings merely to pass a check. `confirmed-issue` stays actionable; `accepted-risk`
 is a different, explicitly authorized decision, not a synonym for acceptable code.
 
-`wt reviews --format json` exposes the current stored record hash and rationale.
+`wt inspect FINDING_ID --format json` re-evaluates the current raw occurrence,
+stored rationale, evidence digest, and specific stale reasons.
+`wt reviews [FINDING_ID] --format json` exposes stored records, labeled not evaluated.
 A replacement requires `--expect-hash` and appends history. Changed owning files,
 repository-rule input sets, rule contracts, runtime semantics and explicitly
 watched files reopen the decision. Copies do not inherit acceptance. Missing
-matches are not automatically fixed. Inspect `reviewed`, `review_records`, all
-analysis errors and coverage alongside actionable `diagnostics`.
+matches are not automatically fixed. Protocol-3 summary results contain every
+actionable diagnostic and errors, plus accurate partition counts. Use
+`wt check --detail full --format json` for `reviewed`, `suppressed`, `files`, and
+`review_records`; absence of these arrays in the summary means omitted inventory,
+not zero occurrences.
 
-See `docs/readable-rules-and-reviews.md` in a WT checkout and `wt review --help` /
-`wt schema review` in an installed build. Rule schema 3, review schema 1 and command
-envelope schema 2 are independent; inspect the installed executable before use.
+See `wt guide review` and `wt schema review` in an installed build. Rule schema 3,
+configuration schema 3, review schema 1, fixture schema 2, and result protocol 3
+are independent. Older result protocol 2 requires explicit
+`--output-version 2 --detail full` and rejects checks that cannot be represented without losing
+coverage policy or candidate-preview facts.

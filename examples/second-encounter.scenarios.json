@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "submission": "review-legacy-endpoint.json",
+  "source": "src/compat.txt",
+  "dependency": "src/routing.json",
+  "transitions": [
+    {"name": "initial-review", "expect": "raw-positive review requiring contextual evidence"},
+    {"name": "unchanged-recheck", "expect": "same raw occurrence with current reviewed disposition"},
+    {"name": "new-copy", "expect": "new independently actionable occurrence; original remains reviewed"},
+    {"name": "dependency-edit", "expect": "original acceptance stale with watched_file_changed reason"},
+    {"name": "owner-edit", "expect": "whole-file evidence invalidates the original acceptance"},
+    {"name": "missing-occurrence", "expect": "history remains inspectable; absence is not automatically a fix"}
+  ],
+  "identifiers": "Use IDs, hashes and record digests returned by the tested binary; none are precomputed here."
+}

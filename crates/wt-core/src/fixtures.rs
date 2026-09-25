@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Result};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wt_runtime::{Program, QueryArena, RawDiagnostic, SourceFile};
+use wt_runtime::{RawDiagnostic, SourceFile};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -132,12 +132,6 @@ impl TestSuite {
         });
         positive && negative
     }
-}
-
-pub fn run_suite(package: &RulePackage, program: &Program) -> Result<TestOutcome> {
-    run_suite_with(package, |files| {
-        program.execute(files, &mut QueryArena::new(true))
-    })
 }
 
 pub fn run_suite_with<F>(package: &RulePackage, mut execute: F) -> Result<TestOutcome>

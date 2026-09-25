@@ -14,6 +14,7 @@ wt-core = { path = "../wt-core" }
 [dev-dependencies]
 jsonschema = { version = "0.57", default-features = false }
 tempfile.workspace = true
+wt-runtime = { path = "../wt-runtime" }
 
 [[bin]]
 name = "wt"

@@ -11,11 +11,30 @@ fn invoke(root: &Path, global: &Path, args: &[&str], input: Option<&str>) -> Out
     invoke_owned(root, global, &owned, input)
 }
 
+fn invoke_benchmark(root: &Path, global: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_wt"))
+        .current_dir(root)
+        .args(args)
+        .args(["--output-version", "2", "--detail", "full", "--root"])
+        .arg(root)
+        .arg("--global-dir")
+        .arg(global)
+        .env("XDG_CACHE_HOME", global)
+        .output()
+        .unwrap()
+}
+
 fn invoke_owned(root: &Path, global: &Path, args: &[OsString], input: Option<&str>) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wt"));
     command
         .current_dir(root)
         .args(args)
+        .args(["--output-version", "2"])
+        .args(if args.iter().any(|arg| arg == "check") {
+            &["--detail", "full"][..]
+        } else {
+            &[]
+        })
         .arg("--root")
         .arg(root)
         .arg("--global-dir")
@@ -701,7 +720,9 @@ fn performance_matrix_work_counts_10k_files_100mib_and_25_100_1000_rules() {
         let global = tempdir().unwrap();
         let data = root.path().join("data");
         std::fs::create_dir_all(&data).unwrap();
-        let content = "x".repeat(10_486);
+        let mut content = "x".repeat(10_486);
+        let identity = root.path().to_string_lossy();
+        content.replace_range(..identity.len(), &identity);
         for index in 0..10_000 {
             std::fs::write(data.join(format!("file-{index:05}.txt")), &content).unwrap();
         }
@@ -736,7 +757,8 @@ fn performance_matrix_work_counts_10k_files_100mib_and_25_100_1000_rules() {
             )
             .unwrap();
         }
-        let output = invoke(
+        let started = std::time::Instant::now();
+        let output = invoke_benchmark(
             root.path(),
             global.path(),
             &[
@@ -747,8 +769,8 @@ fn performance_matrix_work_counts_10k_files_100mib_and_25_100_1000_rules() {
                 "--format",
                 "json",
             ],
-            None,
         );
+        let elapsed_ms = started.elapsed().as_millis();
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -758,6 +780,82 @@ fn performance_matrix_work_counts_10k_files_100mib_and_25_100_1000_rules() {
         let value = assert_result(&output);
         assert_eq!(value["summary"]["checked_files"], 10_000);
         assert_eq!(value["stats"]["runtime"]["source_reads"], 10_000);
-        eprintln!("rule_count={rule_count} work={}", value["stats"]["runtime"]);
+        eprintln!(
+            "rule_count={rule_count} cold_no_cache_elapsed_ms={} work={}",
+            elapsed_ms, value["stats"]["runtime"]
+        );
+        if rule_count == 25 {
+            let cached = || {
+                let started = std::time::Instant::now();
+                let output = invoke_benchmark(
+                    root.path(),
+                    global.path(),
+                    &["check", "--no-global", "--stats", "--format", "json"],
+                );
+                let elapsed_ms = started.elapsed().as_millis();
+                assert_eq!(output.status.code(), Some(0));
+                (assert_result(&output), elapsed_ms)
+            };
+            let (initial, seed_ms) = cached();
+            assert_eq!(
+                initial["stats"]["cache"]["raw_misses"], 250_000,
+                "{initial}"
+            );
+            eprintln!("rule_count=25 cache_seed_elapsed_ms={seed_ms}");
+            let (warm, warm_ms) = cached();
+            assert_eq!(warm["stats"]["cache"]["raw_hits"], 250_000);
+            assert_eq!(warm["stats"]["runtime"]["source_reads"], 10_000);
+            eprintln!(
+                "rule_count=25 warm_elapsed_ms={} source_reads={}",
+                warm_ms, warm["stats"]["runtime"]["source_reads"]
+            );
+
+            std::fs::write(data.join("file-00000.txt"), "y".repeat(10_486)).unwrap();
+            let (changed, changed_ms) = cached();
+            assert_eq!(changed["stats"]["cache"]["raw_hits"], 249_975);
+            assert_eq!(changed["stats"]["cache"]["raw_misses"], 25);
+            eprintln!(
+                "rule_count=25 one_file_changed_elapsed_ms={} cache={}",
+                changed_ms, changed["stats"]["cache"]
+            );
+
+            let new_rule = rules.join("matrix-0025");
+            std::fs::create_dir(&new_rule).unwrap();
+            let mut manifest: Value = serde_json::from_slice(
+                &std::fs::read(rules.join("matrix-0000/rule.json")).unwrap(),
+            )
+            .unwrap();
+            manifest["id"] = json!("matrix-0025");
+            std::fs::write(
+                new_rule.join("rule.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                new_rule.join("check.wt"),
+                "if file.text.contains(\"never\") { emit(file.span, \"hit\"); }",
+            )
+            .unwrap();
+            let (added, added_ms) = cached();
+            assert_eq!(added["stats"]["cache"]["raw_hits"], 250_000);
+            assert_eq!(added["stats"]["cache"]["raw_misses"], 10_000);
+            eprintln!(
+                "rule_count=26 one_rule_added_elapsed_ms={} cache={}",
+                added_ms, added["stats"]["cache"]
+            );
+
+            std::fs::write(
+                new_rule.join("check.wt"),
+                "if file.text.contains(\"never-again\") { emit(file.span, \"hit\"); }",
+            )
+            .unwrap();
+            let (edited, edited_ms) = cached();
+            assert_eq!(edited["stats"]["cache"]["raw_hits"], 250_000);
+            assert_eq!(edited["stats"]["cache"]["raw_misses"], 10_000);
+            eprintln!(
+                "rule_count=26 one_rule_edited_elapsed_ms={} cache={}",
+                edited_ms, edited["stats"]["cache"]
+            );
+        }
     }
 }

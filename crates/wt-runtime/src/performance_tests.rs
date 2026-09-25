@@ -28,10 +28,38 @@ fn repeated_regex_consumers_hash_one_source_snapshot() {
     }
     assert_eq!(arena.stats()["regex_evaluations"], 1);
     assert_eq!(arena.stats()["shared_result_hits"], 99);
+    assert_eq!(arena.stats()["residual_iterations"], 100);
+    arena.clear_file_results();
+    assert!(arena.stats()["peak_retained_bytes"].as_u64().unwrap() > 0);
     assert_eq!(
         arena.stats()["cache_key_bytes_hashed"],
         files[0].text.len() as u64
     );
+}
+
+#[test]
+fn retained_peak_survives_text_scope_eviction() {
+    let mut arena = QueryArena::new(true);
+    let mut temporary = 0;
+    let key = |path: &str, digest: u8| TextKey {
+        path: path.to_owned(),
+        digest: [digest; 32],
+        operation: "text::trim".to_owned(),
+        arguments: Vec::new(),
+    };
+    arena
+        .text_query(key("first.txt", 1), None, 0, &mut temporary, || {
+            Ok(Value::Text("x".repeat(1024).into()))
+        })
+        .unwrap();
+    let retained = arena.stats()["retained_memory_bytes"].as_u64().unwrap();
+    assert!(retained >= 1024);
+    arena
+        .text_query(key("second.txt", 2), None, 0, &mut temporary, || {
+            Ok(Value::Text("y".into()))
+        })
+        .unwrap();
+    assert!(arena.stats()["peak_retained_bytes"].as_u64().unwrap() >= retained);
 }
 
 #[test]

@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tempfile::NamedTempFile;
-use wt_runtime::RawDiagnostic;
+use wt_runtime::{RawDiagnostic, RuntimeLimits};
 
 const CACHE_SCHEMA_VERSION: u64 = 3;
 const MAX_CACHE_ENTRY_BYTES: usize = 16 * 1024 * 1024;
@@ -273,13 +273,19 @@ impl Store {
     }
 }
 
-pub fn raw_key(package: &RulePackage, path: &str, file_digest: &str) -> String {
+pub fn raw_key_with_limits(
+    package: &RulePackage,
+    path: &str,
+    file_digest: &str,
+    limits: RuntimeLimits,
+) -> String {
     let rule = execution_digest(package);
     let applicability = serde_json::to_vec(&package.manifest.scope).expect("rule scope identity");
     let resource_profile = serde_json::to_vec(&(
         RUNTIME_RESOURCE_PROFILE,
         &package.manifest.execution,
         &package.manifest.code.capabilities,
+        limits,
     ))
     .expect("runtime resource identity");
     semantic_digest(
@@ -296,12 +302,13 @@ pub fn raw_key(package: &RulePackage, path: &str, file_digest: &str) -> String {
     )
 }
 
-pub fn fixture_key(package: &RulePackage) -> Result<String> {
+pub fn fixture_key_with_limits(package: &RulePackage, limits: RuntimeLimits) -> Result<String> {
     let mut parts = vec![
         CACHE_SEMANTICS_VERSION.as_bytes().to_vec(),
         compiled_semantic_identity().as_bytes().to_vec(),
         package.directory.to_string_lossy().as_bytes().to_vec(),
         package.source.as_bytes().to_vec(),
+        serde_json::to_vec(&limits)?,
     ];
     parts.push(serde_json::to_vec(&package.manifest.execution)?);
     parts.push(serde_json::to_vec(&package.manifest.scope)?);
@@ -328,8 +335,11 @@ pub fn fixture_key(package: &RulePackage) -> Result<String> {
     Ok(semantic_digest("WT-FIXTURES-3", &refs))
 }
 
-#[allow(dead_code)]
-pub fn repo_raw_key(package: &RulePackage, files: &[(&str, &str)]) -> String {
+pub fn repo_raw_key_with_limits(
+    package: &RulePackage,
+    files: &[(&str, &str)],
+    limits: RuntimeLimits,
+) -> String {
     let mut files = files.to_vec();
     files.sort_unstable();
     let file_parts = files
@@ -341,6 +351,7 @@ pub fn repo_raw_key(package: &RulePackage, files: &[(&str, &str)]) -> String {
         RUNTIME_RESOURCE_PROFILE,
         &package.manifest.execution,
         &package.manifest.code.capabilities,
+        limits,
     ))
     .expect("runtime resource identity");
     let input_digest = semantic_digest("WT-REPOSITORY-INPUTS-1", &file_parts);

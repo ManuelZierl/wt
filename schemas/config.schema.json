@@ -6,11 +6,43 @@
   "additionalProperties": false,
   "required": ["schema_version"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "scan": {"$ref": "#/$defs/scan"},
-    "rules": {"$ref": "#/$defs/rules"}
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "optimizer": {"$ref": "#/$defs/optimizer"},
+    "rules": {"$ref": "#/$defs/rules"},
+    "coverage": {"$ref": "#/$defs/coverage"}
   },
   "$defs": {
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "file_steps": {"type": "integer", "minimum": 1, "maximum": 1000000, "default": 1000000},
+        "file_native_bytes": {"type": "integer", "minimum": 1, "maximum": 134217728, "default": 134217728},
+        "repository_steps": {"type": "integer", "minimum": 1, "maximum": 10000000, "default": 10000000},
+        "repository_native_bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824, "default": 1073741824},
+        "worker_memory_bytes": {"type": "integer", "minimum": 268435456, "maximum": 536870912, "default": 268435456},
+        "parent_memory_bytes": {"type": "integer", "minimum": 268435456, "maximum": 536870912, "default": 268435456},
+        "total_memory_bytes": {"type": "integer", "minimum": 536870912, "maximum": 1073741824, "default": 1073741824}
+      }
+    },
+    "optimizer": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"mode": {"enum": ["auto", "off"], "default": "auto"}}
+    },
+    "coverage": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"expectations": {"type": "array", "items": {"$ref": "#/$defs/expectation"}}}
+    },
+    "expectation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule_id", "minimum_files", "reason"],
+      "properties": {
+        "rule_id": {"type": "string", "pattern": "^(?:global|local)/[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*$"},
+        "minimum_files": {"type": "integer", "minimum": 1},
+        "reason": {"type": "string", "pattern": ".*\\S.*"}
+      }
+    },
     "scan": {
       "type": "object",
       "additionalProperties": false,

@@ -106,9 +106,6 @@ pub fn load(root: &Path) -> Result<Store> {
             .file_name()
             .into_string()
             .map_err(|_| anyhow!("non-UTF-8 review path"))?;
-        if name.starts_with('.') {
-            continue;
-        }
         if store.records.len() >= MAX_RECORDS {
             bail!("review record limit exceeded");
         }
@@ -140,9 +137,6 @@ fn load_latest(root: &Path, name: &str) -> Result<Option<Stored>> {
             .file_name()
             .into_string()
             .map_err(|_| anyhow!("invalid revision name"))?;
-        if name.starts_with('.') {
-            continue;
-        }
         if name.len() != 8
             || !name.bytes().all(|b| b.is_ascii_digit())
             || !entry.file_type()?.is_dir()
@@ -155,6 +149,9 @@ fn load_latest(root: &Path, name: &str) -> Result<Option<Stored>> {
         }
     }
     revisions.sort_unstable();
+    if revisions.is_empty() {
+        bail!("review history has no complete revision");
+    }
     for (index, revision) in revisions.iter().enumerate() {
         if *revision != index as u32 + 1 {
             bail!("review history has a missing revision");
@@ -248,6 +245,7 @@ pub struct Application {
     pub diagnostics: Vec<Value>,
     pub reviewed: Vec<Value>,
     pub records: Vec<Value>,
+    pub evidence_reads: usize,
 }
 
 pub fn apply(
@@ -260,6 +258,7 @@ pub fn apply(
         diagnostics: Vec::new(),
         reviewed: Vec::new(),
         records: Vec::new(),
+        evidence_reads: 0,
     };
     let mut observed = BTreeSet::new();
     let mut evidence = BTreeMap::<String, Option<String>>::new();
@@ -273,18 +272,67 @@ pub fn apply(
             result.diagnostics.push(finding);
             continue;
         };
-        let mut current = string(&finding, "evidence_digest")? == stored.record.evidence_digest;
+        let mut current = true;
         let mut reasons = Vec::new();
-        if !current {
-            reasons.push("source_or_rule_changed".to_owned());
+        for (field, previous, reason) in [
+            (
+                "rule_digest",
+                &stored.record.rule_digest,
+                "rule_package_changed",
+            ),
+            (
+                "file_digest",
+                &stored.record.file_digest,
+                "owner_file_changed",
+            ),
+            (
+                "engine_digest",
+                &stored.record.engine_digest,
+                "runtime_semantics_changed",
+            ),
+        ] {
+            if string(&finding, field)? != previous {
+                current = false;
+                reasons.push(reason.to_owned());
+            }
+        }
+        if string(&finding, "context_digest")? != stored.record.context_digest {
+            current = false;
+            if string(&finding, "file_digest")? == stored.record.file_digest {
+                reasons.push("repository_input_inventory_changed".to_owned());
+            }
+        }
+        if string(&finding, "evidence_digest")? != stored.record.evidence_digest {
+            current = false;
         }
         for (path, expected) in &stored.record.watched_files {
-            let actual = evidence
-                .entry(path.clone())
-                .or_insert_with(|| file_digest(root, path).ok());
+            if !evidence.contains_key(path) {
+                let actual = match file_digest(root, path) {
+                    Ok(digest) => Some(digest),
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+                    {
+                        None
+                    }
+                    Err(error) => {
+                        return Err(error.context(format!("unable to evaluate watched file {path}")))
+                    }
+                };
+                evidence.insert(path.clone(), actual);
+            }
+            let actual = &evidence[path];
             if actual.as_ref() != Some(expected) {
                 current = false;
-                reasons.push(format!("watched_file_changed_or_unavailable:{path}"));
+                reasons.push(format!(
+                    "{}:{path}",
+                    if actual.is_some() {
+                        "watched_file_changed"
+                    } else {
+                        "watched_file_missing"
+                    }
+                ));
             }
         }
         // An 'acceptable' decision is for review triggers, never a bypass for a
@@ -325,22 +373,41 @@ pub fn apply(
     result
         .records
         .sort_by_key(|v| v["finding_id"].as_str().unwrap_or_default().to_owned());
+    result.evidence_reads = evidence.len();
     Ok(result)
 }
 
-pub fn list(root: &Path) -> Result<Value> {
+pub fn list(root: &Path, finding_id: Option<&str>) -> Result<Value> {
     let store = load(root)?;
+    if finding_id.is_some_and(|id| !store.records.contains_key(id)) {
+        bail!("unknown reviewed finding ID {}", finding_id.unwrap());
+    }
     Ok(
         json!({"schema_version":2,"command":"reviews","status":"pass","exit_code":0,
-        "reviews":store.records.values().map(|s| json!({"record":s.record,
+        "reviews":store.records.iter().filter(|(id,_)| finding_id.is_none_or(|wanted| id.as_str()==wanted)).map(|(_,s)| json!({"record":s.record,
             "record_digest":s.digest,"revision":s.revision,"rationale":s.rationale,
             "validity":"not_evaluated"})).collect::<Vec<_>>() }),
     )
 }
 
+pub fn stored_detail(root: &Path, id: &str) -> Result<Option<Value>> {
+    let store = load(root)?;
+    Ok(store.records.get(id).map(|stored| {
+        json!({
+            "record": stored.record, "record_digest": stored.digest,
+            "revision": stored.revision, "rationale": stored.rationale
+        })
+    }))
+}
+
 /// Persist exactly one explicit decision, with optimistic concurrency and
 /// immutable numbered history. No command automatically accepts findings.
-pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
+pub fn record(
+    root: &Path,
+    finding: &Value,
+    options: &Value,
+    revalidate: impl FnOnce() -> Result<()>,
+) -> Result<Value> {
     let expected = string(options, "expect_evidence")?;
     if string(finding, "evidence_digest")? != expected {
         bail!("stale finding evidence; run check and review again");
@@ -384,7 +451,10 @@ pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
     let store_path = safe_path(root, ".wt/reviews", true)?;
     fs::create_dir_all(&store_path)?;
     let name = &id[7..];
-    let lock_path = safe_path(root, &format!(".wt/reviews/.{name}.lock"), true)?;
+    let lock_path = crate::coordination::lock_path(
+        "review",
+        &format!("{}:{name}", root.canonicalize()?.display()),
+    )?;
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -393,8 +463,11 @@ pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
         .open(lock_path)?;
     lock.try_lock().context("review is locked")?;
     let occurrence = safe_path(root, &format!(".wt/reviews/{name}"), true)?;
-    fs::create_dir_all(&occurrence)?;
-    let existing = load_latest(root, name)?;
+    let existing = if occurrence.exists() {
+        load_latest(root, name)?
+    } else {
+        None
+    };
     let expected_record = options.get("expect_hash").and_then(Value::as_str);
     match (&existing, expected_record) {
         (Some(old), Some(hash)) if old.digest == hash => {}
@@ -425,6 +498,7 @@ pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
         previous: existing.as_ref().map(|s| s.digest.clone()),
     };
     validate(&record)?;
+    revalidate()?;
     if file_digest(root, &record.path)? != record.file_digest {
         bail!("owning file changed after check");
     }
@@ -439,6 +513,7 @@ pub fn record(root: &Path, finding: &Value, options: &Value) -> Result<Value> {
     if revision > 10_000 {
         bail!("review history limit exceeded");
     }
+    fs::create_dir_all(&occurrence)?;
     let temp = tempfile::Builder::new()
         .prefix(".pending-")
         .tempdir_in(&occurrence)?;
@@ -485,6 +560,7 @@ fn relative(path: &str) -> Result<()> {
     }
     Ok(())
 }
+
 fn safe_path(root: &Path, path: &str, allow_missing: bool) -> Result<PathBuf> {
     relative(path)?;
     let mut current = root.to_path_buf();
@@ -523,4 +599,31 @@ fn file_digest(root: &Path, path: &str) -> Result<String> {
         &safe_path(root, path, false)?,
         MAX_EVIDENCE_FILE,
     )?))
+}
+
+#[cfg(test)]
+mod golden_vectors {
+    use super::*;
+
+    #[test]
+    fn pinned_finding_evidence_and_record_digest_framing() {
+        let mut finding = json!({"rule_id":"local/vector","code":"hit","path":"src/a.txt",
+            "start_byte":0,"end_byte":3,"rule_digest":format!("sha256:{}", "1".repeat(64)),
+            "file_digest":format!("sha256:{}", "2".repeat(64)),
+            "context_digest":format!("sha256:{}", "3".repeat(64)),
+            "engine_digest":format!("sha256:{}", "4".repeat(64))});
+        decorate(&mut finding, &format!("sha256:{}", "0".repeat(64))).unwrap();
+        assert_eq!(
+            finding["finding_id"],
+            "sha256:109740956a93be6e9d49fe92d252a3494bd0ddaa1d8937357c5a3ca5cbfa9a0f"
+        );
+        assert_eq!(
+            finding["evidence_digest"],
+            "sha256:02eacd4c8a1a066d526eca74010b3846f21079f4d109c9b3c69d36cf5d24878b"
+        );
+        assert_eq!(
+            record_digest(br#"{"schema_version":1}"#, b"# Reviewed\n"),
+            "sha256:33d87a000036666295070847b760e97e496d2672ed2ed0a2d730982ce4b900dc"
+        );
+    }
 }

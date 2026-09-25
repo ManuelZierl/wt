@@ -6,10 +6,13 @@
 
 mod cache;
 mod config;
+mod coordination;
 mod digest;
 mod discovery;
 mod fixtures;
 mod formatting;
+mod inspection;
+mod protocol;
 mod reviews;
 mod rule;
 mod runner;
@@ -25,6 +28,34 @@ use std::collections::HashSet;
 use std::fmt;
 
 pub use digest::{digest_bytes, digest_package, digest_text};
+
+/// Return the installed, version-pinned rule/submission schema projection.
+/// The shared definition is bundled once; each advertised version fixes the
+/// version tag and excludes the other version's authoritative prose fields.
+pub fn package_schema(name: &str, version: u64) -> Result<Value> {
+    let source = match name {
+        "rule" => include_str!("../../../schemas/rule.schema.json"),
+        "submission" => include_str!("../../../schemas/submission.schema.json"),
+        _ => return Err(anyhow!("unknown package schema {name}")),
+    };
+    if !matches!(version, 2 | 3) {
+        return Err(anyhow!("unsupported {name} schema version {version}"));
+    }
+    let mut schema = parse_json(source)?;
+    schema["$id"] = serde_json::json!(format!(
+        "https://watchtower.local/schemas/{name}-v{version}.schema.json"
+    ));
+    schema["properties"]["schema_version"] = serde_json::json!({"const":version});
+    let properties = schema["properties"].as_object_mut().unwrap();
+    if version == 2 {
+        properties.remove("documentation");
+    } else {
+        for key in ["description", "rationale", "limitations"] {
+            properties.remove(key);
+        }
+    }
+    Ok(schema)
+}
 
 /// Parse strict JSON, including rejecting duplicate object keys at every level.
 pub fn parse_json(input: &str) -> Result<Value> {
@@ -151,15 +182,34 @@ pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
     if !options.is_object() {
         return Err(anyhow!("options must be a JSON object"));
     }
-    match runner::dispatch(command, options) {
-        Ok(value) => Ok(value),
-        Err(error) => Ok(serde_json::json!({
+    let version = options
+        .get("output_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(2);
+    let detail = options.get("detail").and_then(Value::as_str).unwrap_or(
+        if options.get("output_version").is_none() {
+            "full"
+        } else {
+            "summary"
+        },
+    );
+    let result = match runner::dispatch(command, options) {
+        Ok(value) => value,
+        Err(error) => serde_json::json!({
             "schema_version": 2,
             "command": command,
             "status": "error",
             "exit_code": 2,
             "error": error.to_string()
-        })),
+        }),
+    };
+    match protocol::project(result, version, detail) {
+        Ok(value) => Ok(value),
+        Err(error) => protocol::project(
+            serde_json::json!({"schema_version":2,"command":command,"status":"error","exit_code":2,"error":error.to_string()}),
+            version,
+            detail,
+        ),
     }
 }
 

@@ -1,0 +1,32 @@
+{
+  "schema_version": 3,
+  "id": "review-legacy-endpoint",
+  "title": "Review legacy endpoint references",
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["src/**/*.txt"]},
+  "patterns": {"legacy_endpoint": "/v1/legacy"},
+  "diagnostics": {
+    "legacy-endpoint": {
+      "kind": "review",
+      "message": "This note mentions the legacy endpoint; its routing context is unresolved.",
+      "help": "Check whether the reference is still valid and record any supporting routing file as watched evidence."
+    }
+  },
+  "documentation": {
+    "source": "# Intended constraint\n\nReview references to `/v1/legacy` in service notes before changing the endpoint.\n\n## What is detected\n\nThe literal string anywhere in a `.txt` file under `src/`; this is a text review trigger, not a URL parser.\n\n## How to review\n\nInspect the owning note and verify the current routing behavior. If accepting a reference based on a routing file, record its digest as an explicit watched dependency.\n\n## Known limitations\n\nThis detector does not classify the endpoint as broken, inspect other file types, or watch future files merely because they are mentioned here.\n\n## Evidence\n\nSynthetic example only; the raw-positive acceptable note is not an application regression test.\n\n## Change history\n\nInitial review-state lifecycle example."
+  },
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": ["regex.v1"],
+    "source": "for matched in rx::find_all(file, \"legacy_endpoint\") { emit(matched.span, \"legacy-endpoint\"); }"
+  },
+  "tests": {
+    "schema_version": 2,
+    "cases": [
+      {"name": "raw-positive-acceptable-note", "files": [{"path": "src/compat.txt", "content": "A compatibility note retains /v1/legacy."}], "expect": [{"path": "src/compat.txt", "code": "legacy-endpoint", "kind": "review"}]},
+      {"name": "raw-negative-other-endpoint", "files": [{"path": "src/compat.txt", "content": "A note about /v2/current."}], "expect": []}
+    ]
+  }
+}

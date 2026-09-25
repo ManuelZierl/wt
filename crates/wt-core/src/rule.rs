@@ -296,7 +296,7 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
         code,
     } = fields;
     if !valid_rule_id(id) {
-        bail!("invalid rule id {id:?}")
+        bail!("invalid rule id {id:?} at /id; expected ^[a-z][a-z0-9]*(?:[-.][a-z0-9]+)*$; choose a lowercase, path-free ID")
     }
     if !matches!(mode, "advisory" | "enforced" | "disabled") {
         bail!("invalid rule mode {mode:?}")
@@ -307,17 +307,22 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     if !matches!(execution, "file" | "repository") {
         bail!("invalid execution mode {execution:?}")
     }
-    if scope.include.is_empty() || scope.include.iter().any(|glob| !valid_glob(glob)) {
-        bail!("scope.include must contain safe, valid globs")
+    if scope.include.is_empty() {
+        bail!("scope.include at /scope/include must contain at least one root-relative glob; add an eligible path pattern")
+    }
+    for (index, glob) in scope.include.iter().enumerate() {
+        if !valid_glob(glob) {
+            bail!("invalid scope.include glob at /scope/include/{index}: {glob:?}; use a root-relative /-separated glob without traversal or backslashes")
+        }
     }
     for entry in &scope.exclude {
         if !valid_glob(&entry.glob) || entry.reason.trim().is_empty() {
-            bail!("scope exclusions require safe globs and nonempty reasons")
+            bail!("invalid scope exclusion at /scope/exclude: use a safe root-relative glob and a nonempty reason")
         }
     }
     for path in &scope.require_files {
         if !safe_relative(path) {
-            bail!("scope.require_files contains an unsafe path")
+            bail!("unsafe scope.require_files path at /scope/require_files: use a root-relative path without traversal")
         }
     }
     if patterns.len() > 128 {
@@ -325,7 +330,7 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     }
     for (name, pattern) in patterns {
         if !valid_identifier(name) {
-            bail!("invalid pattern id {name:?}")
+            bail!("invalid pattern id {name:?} at /patterns/{}; use an identifier of ASCII letters, digits and underscores, starting with a letter or underscore", name.replace('~', "~0").replace('/', "~1"))
         }
         let regex = match pattern {
             Pattern::Shorthand(value) => value,
@@ -357,7 +362,7 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     }
     for (id, diagnostic) in diagnostics {
         if !valid_diagnostic_id(id) {
-            bail!("invalid diagnostic id {id:?}")
+            bail!("invalid diagnostic id {id:?} at /diagnostics/{}; use ASCII letters, digits, underscore or hyphen", id.replace('~', "~0").replace('/', "~1"))
         }
         if !matches!(diagnostic.kind.as_str(), "violation" | "review")
             || diagnostic.message.trim().is_empty()

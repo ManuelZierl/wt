@@ -12,6 +12,12 @@ fn invoke(
     command
         .current_dir(root)
         .args(args)
+        .args(["--output-version", "2"])
+        .args(if args.contains(&"check") {
+            &["--detail", "full"][..]
+        } else {
+            &[]
+        })
         .arg("--root")
         .arg(root)
         .arg("--global-dir")
@@ -579,10 +585,29 @@ fn schema_command_prints_the_bundled_schema_verbatim() {
         let output = invoke(
             root.path(),
             global.path(),
-            &["schema", name, "--format", "json"],
+            &[
+                "schema",
+                name,
+                "--schema-version",
+                if name == "review" {
+                    "1"
+                } else if name == "config" {
+                    "3"
+                } else {
+                    "2"
+                },
+                "--format",
+                "json",
+            ],
             None,
         );
         assert_eq!(output.status.code(), Some(0), "schema {name}");
+        if matches!(name, "rule" | "submission") {
+            let projected = json_output(&output);
+            assert_eq!(projected["properties"]["schema_version"]["const"], 2);
+            assert!(projected["properties"].get("documentation").is_none());
+            continue;
+        }
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             expected,

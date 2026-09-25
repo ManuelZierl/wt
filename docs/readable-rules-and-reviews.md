@@ -145,8 +145,10 @@ and visible in `suppressed`; they are not silently migrated into review judgment
 `reviews` displays stored evidence and rationale but labels validity
 `not_evaluated`; only a fresh check evaluates it.
 
-Command envelopes retain version 2 with additive review/formatting fields. Use
-the current bundled schema for strict validation. Rule package schema 3 is a
+Result protocol 3 is the default, with compact check inventory and explicit
+`--detail full`. Use the current bundled result schema for strict validation;
+protocol 2 requires explicit `--output-version 2 --detail full` when a legacy
+projection can represent the result. Rule package schema 3 is a
 separate version from the WRL1 language and review-record schema 1.
 
 ## Agent and CI requirements

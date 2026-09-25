@@ -64,15 +64,23 @@ pub struct SourceFile {
     pub text: SharedText,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeLimits {
     pub max_file_bytes: usize,
+    pub file_steps: u64,
+    pub file_native_bytes: u64,
+    pub repository_steps: u64,
+    pub repository_native_bytes: u64,
 }
 
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
             max_file_bytes: MAX_FILE_CEILING,
+            file_steps: MAX_STEPS,
+            file_native_bytes: MAX_NATIVE_BYTES,
+            repository_steps: MAX_REPOSITORY_STEPS,
+            repository_native_bytes: MAX_REPOSITORY_NATIVE_BYTES,
         }
     }
 }
@@ -316,6 +324,8 @@ struct ArenaStats {
     native_bytes: u64,
     temporary_bytes: usize,
     residual_invocations: usize,
+    residual_iterations: u64,
+    peak_retained_bytes: usize,
     cache_key_bytes_hashed: u64,
 }
 
@@ -347,21 +357,31 @@ impl QueryArena {
             "native_bytes": self.stats.native_bytes,
             "temporary_bytes": self.stats.temporary_bytes,
             "retained_memory_bytes": self.retained_bytes,
+            "peak_retained_bytes": self.stats.peak_retained_bytes.max(self.retained_bytes),
             "residual_invocations": self.stats.residual_invocations,
+            "residual_iterations": self.stats.residual_iterations,
             "cache_key_bytes_hashed": self.stats.cache_key_bytes_hashed,
         })
     }
 
-    fn record_execution(&mut self, steps: u64, native_bytes: u64, temporary_bytes: usize) {
+    fn record_execution(
+        &mut self,
+        steps: u64,
+        native_bytes: u64,
+        temporary_bytes: usize,
+        iterations: u64,
+    ) {
         self.stats.logical_steps = self.stats.logical_steps.saturating_add(steps);
         self.stats.native_bytes = self.stats.native_bytes.saturating_add(native_bytes);
         self.stats.temporary_bytes = self.stats.temporary_bytes.saturating_add(temporary_bytes);
         self.stats.residual_invocations = self.stats.residual_invocations.saturating_add(1);
+        self.stats.residual_iterations = self.stats.residual_iterations.saturating_add(iterations);
     }
 
     /// Release retained derived values for the completed file-local transaction.
     /// Counters intentionally remain cumulative for runner statistics.
     pub fn clear_file_results(&mut self) {
+        self.stats.peak_retained_bytes = self.stats.peak_retained_bytes.max(self.retained_bytes);
         self.regex.clear();
         self.capture_text.clear();
         self.jsx.clear();
@@ -387,6 +407,8 @@ impl QueryArena {
         let cacheable = self.optimized && !key.path.is_empty();
         let scope = (key.path.clone(), key.digest);
         if cacheable && self.text_scope.as_ref() != Some(&scope) {
+            self.stats.peak_retained_bytes =
+                self.stats.peak_retained_bytes.max(self.retained_bytes);
             self.retained_bytes = self.retained_bytes.saturating_sub(self.text_retained_bytes);
             self.text.clear();
             self.text_retained_bytes = 0;
@@ -979,6 +1001,28 @@ impl Program {
         if limits.max_file_bytes == 0 || limits.max_file_bytes > MAX_FILE_CEILING {
             bail!("configured file limit exceeds the runtime ceiling");
         }
+        for (name, value, ceiling) in [
+            ("file_steps", limits.file_steps, MAX_STEPS),
+            (
+                "file_native_bytes",
+                limits.file_native_bytes,
+                MAX_NATIVE_BYTES,
+            ),
+            (
+                "repository_steps",
+                limits.repository_steps,
+                MAX_REPOSITORY_STEPS,
+            ),
+            (
+                "repository_native_bytes",
+                limits.repository_native_bytes,
+                MAX_REPOSITORY_NATIVE_BYTES,
+            ),
+        ] {
+            if value == 0 || value > ceiling {
+                bail!("configured {name} exceeds the runtime ceiling or is zero");
+            }
+        }
         for file in files {
             if file.path.is_empty()
                 || file.path.starts_with('/')
@@ -1008,8 +1052,8 @@ impl Program {
             }
         }
         let (max_steps, max_native_bytes) = match self.execution {
-            Execution::File => (MAX_STEPS, MAX_NATIVE_BYTES),
-            Execution::Repository => (MAX_REPOSITORY_STEPS, MAX_REPOSITORY_NATIVE_BYTES),
+            Execution::File => (limits.file_steps, limits.file_native_bytes),
+            Execution::Repository => (limits.repository_steps, limits.repository_native_bytes),
         };
         let mut ctx = EvalContext {
             program: self,
@@ -1017,6 +1061,7 @@ impl Program {
             arena,
             diagnostics: Vec::new(),
             steps: 0,
+            iterations: 0,
             loop_depth: 0,
             native_bytes: 0,
             temporary_bytes: 0,
@@ -1039,9 +1084,14 @@ impl Program {
                 ctx.exec_block(self.ast.statements(), &mut env).map(|_| ())
             }
         };
-        let stats = (ctx.steps, ctx.native_bytes, ctx.temporary_bytes);
+        let stats = (
+            ctx.steps,
+            ctx.native_bytes,
+            ctx.temporary_bytes,
+            ctx.iterations,
+        );
         let diagnostics = ctx.diagnostics;
-        arena.record_execution(stats.0, stats.1, stats.2);
+        arena.record_execution(stats.0, stats.1, stats.2, stats.3);
         result.map(|_| diagnostics)
     }
 }
@@ -2385,6 +2435,7 @@ struct EvalContext<'a> {
     arena: &'a mut QueryArena,
     diagnostics: Vec<RawDiagnostic>,
     steps: u64,
+    iterations: u64,
     loop_depth: usize,
     native_bytes: u64,
     temporary_bytes: usize,
@@ -2480,6 +2531,7 @@ impl EvalContext<'_> {
                 self.loop_depth += 1;
                 for value in values {
                     self.charge()?;
+                    self.iterations = self.iterations.saturating_add(1);
                     env.push();
                     env.define(data.0.name.as_str(), value, false);
                     let result = self.exec_block(data.2.body.statements(), env)?;
@@ -3994,6 +4046,7 @@ mod tests {
                 &mut QueryArena::new(true),
                 RuntimeLimits {
                     max_file_bytes: 4 * 1024 * 1024,
+                    ..RuntimeLimits::default()
                 },
             )
             .is_err());

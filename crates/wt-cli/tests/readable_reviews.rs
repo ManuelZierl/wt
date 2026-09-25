@@ -9,6 +9,12 @@ fn run(root: &Path, global: &Path, args: &[&str], input: Option<&Value>) -> Valu
     let mut command = Command::new(env!("CARGO_BIN_EXE_wt"));
     command
         .args(args)
+        .args(["--output-version", "2"])
+        .args(if args.contains(&"check") {
+            &["--detail", "full"][..]
+        } else {
+            &[]
+        })
         .args(["--format", "json", "--root"])
         .arg(root)
         .arg("--global-dir")

@@ -1296,6 +1296,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wt-core",
+ "wt-runtime",
 ]
 
 [[package]]

@@ -15,7 +15,23 @@ mod formatting;
 mod rule;
 
 use anyhow::Result;
-use cache::{clear_at_directory, fixture_key, raw_key, repo_raw_key, Store};
+use cache::{
+    clear_at_directory, fixture_key_with_limits, raw_key_with_limits, repo_raw_key_with_limits,
+    Store,
+};
+use wt_runtime::RuntimeLimits;
+
+fn fixture_key(package: &rule::RulePackage) -> anyhow::Result<String> {
+    fixture_key_with_limits(package, RuntimeLimits::default())
+}
+
+fn raw_key(package: &rule::RulePackage, path: &str, digest: &str) -> String {
+    raw_key_with_limits(package, path, digest, RuntimeLimits::default())
+}
+
+fn repo_raw_key(package: &rule::RulePackage, files: &[(&str, &str)]) -> String {
+    repo_raw_key_with_limits(package, files, RuntimeLimits::default())
+}
 use fixtures::{FixtureFile, TestCase, TestOutcome, TestSuite};
 use rule::{Code, DiagnosticDefinition, Manifest, RulePackage, Scope, ScopeExclude};
 use std::collections::BTreeMap;
@@ -195,6 +211,22 @@ fn fixture_keys_use_loaded_bytes_and_package_identity() -> Result<()> {
         &[("a.txt", "sha256:a"), ("b.txt", "sha256:b")],
     );
     assert_ne!(one_file, two_files);
+    let strict = RuntimeLimits {
+        file_native_bytes: 1,
+        ..RuntimeLimits::default()
+    };
+    assert_ne!(
+        raw_key(&first_package, "src/input.txt", "sha256:file"),
+        raw_key_with_limits(&first_package, "src/input.txt", "sha256:file", strict)
+    );
+    assert_ne!(
+        fixture_key(&first_package)?,
+        fixture_key_with_limits(&first_package, strict)?
+    );
+    assert_ne!(
+        one_file,
+        repo_raw_key_with_limits(&first_package, &[("a.txt", "sha256:a")], strict)
+    );
     Ok(())
 }
 

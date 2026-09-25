@@ -33,7 +33,10 @@ fn request(source: &str) -> WorkerRequest {
             text: source.to_owned(),
         }],
         optimized: true,
-        max_file_bytes: 4 * 1024 * 1024,
+        limits: wt_runtime::RuntimeLimits {
+            max_file_bytes: 4 * 1024 * 1024,
+            ..wt_runtime::RuntimeLimits::default()
+        },
         repository: false,
     }
 }

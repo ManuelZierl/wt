@@ -9,6 +9,8 @@ use std::process::Command;
 pub struct Workspace {
     pub root: PathBuf,
     pub local_dir: PathBuf,
+    pub global_config: Option<config::ConfigFile>,
+    pub local_config: Option<config::ConfigFile>,
     pub effective_config: EffectiveConfig,
     pub packages: Vec<RulePackage>,
 }
@@ -44,14 +46,18 @@ pub fn discover(options: &serde_json::Value) -> Result<Workspace> {
             .collect();
     }
     let mut packages = Vec::new();
-    if let Some(global_dir) = global_dir {
-        packages.extend(load_scope(&global_dir.join("rules"), "global")?);
+    if options["_candidate_preview"] != true {
+        if let Some(global_dir) = global_dir {
+            packages.extend(load_scope(&global_dir.join("rules"), "global")?);
+        }
+        packages.extend(load_scope(&local_dir.join("rules"), "local")?);
+        validate_overrides(&effective_config, &packages, no_global)?;
     }
-    packages.extend(load_scope(&local_dir.join("rules"), "local")?);
-    validate_overrides(&effective_config, &packages, no_global)?;
     Ok(Workspace {
         root,
         local_dir,
+        global_config,
+        local_config,
         effective_config,
         packages,
     })
