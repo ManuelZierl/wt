@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wt-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy (all grammar features)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Test workspace
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test workspace
+        run: cargo test --workspace --locked -- --skip killed_worker_slot_recovers_on_next_request
+      - name: Test worker-kill recovery
+        # Spawns a worker, sleeps past the watchdog deadline, and asserts the
+        # slot recovers on the next request. Rare flake under heavy load: the
+        # timing depends on the OS scheduling a child process and delivering a
+        # kill signal promptly. Retry once before treating it as a failure.
+        run: >
+          cargo test --workspace --locked killed_worker_slot_recovers_on_next_request --
+          --exact ||
+          cargo test --workspace --locked killed_worker_slot_recovers_on_next_request --
+          --exact
+
+  shell-tests:
+    name: Installer and packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - uses: mlugg/setup-zig@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Build Linux x86-64 release assets
+        run: bash build-linux-release.sh
+      - name: Installer smoke test
+        run: bash tests/install.sh
+
+  docs:
+    name: Docs conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Docs conformance test
+        run: bash tests/docs.sh
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Licenses and advisories
+        run: cargo deny check
