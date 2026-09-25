@@ -21,6 +21,27 @@ const INVOCATION_TIMEOUT: Duration = Duration::from_secs(2);
 const REPOSITORY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
+/// Deadlines the watchdog uses to kill a worker that stops responding.
+///
+/// Production code always uses [`WorkerTimeouts::default`]. Tests that need
+/// to exercise the kill-and-recover path deterministically (without racing
+/// the real production deadlines under load) can construct a [`Pool`] with
+/// explicit, generous timeouts via [`Pool::with_memory_and_timeouts`].
+#[derive(Clone, Copy, Debug)]
+pub struct WorkerTimeouts {
+    pub invocation: Duration,
+    pub repository: Duration,
+}
+
+impl Default for WorkerTimeouts {
+    fn default() -> Self {
+        Self {
+            invocation: INVOCATION_TIMEOUT,
+            repository: REPOSITORY_TIMEOUT,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryProfile {
     pub worker_bytes: usize,
@@ -528,7 +549,7 @@ impl ProcessWatchdog {
                     Ok(child) => child,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                let _ = child.kill();
+                kill_process_tree(&mut child);
             }
         });
         Self {
@@ -536,6 +557,32 @@ impl ProcessWatchdog {
             thread: Some(thread),
         }
     }
+}
+
+/// Kill a worker and every process it may have spawned.
+///
+/// A worker's own child process (e.g. a shell helper, or in tests a mock
+/// script that forks `sleep`) can keep the worker's stdout pipe open after
+/// `Child::kill` terminates only the immediate process, since the
+/// descendant inherits the same pipe file descriptor. That leaves the
+/// watchdog's promised deadline hollow: the parent only observes EOF once
+/// every process holding the write end exits, which can be far later than
+/// the configured timeout. Spawning each worker in its own process group
+/// (see [`WorkerProcess::spawn`]) lets us kill the whole tree at once.
+#[cfg(unix)]
+fn kill_process_tree(child: &mut Child) {
+    let pid = child.id() as libc::pid_t;
+    // Negative pid targets the whole process group; the worker is always
+    // spawned as that group's leader (pgid == pid).
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(child: &mut Child) {
+    let _ = child.kill();
 }
 
 impl Drop for ProcessWatchdog {
@@ -549,20 +596,30 @@ impl Drop for ProcessWatchdog {
 
 impl WorkerProcess {
     fn spawn(executable: &Path, memory: MemoryProfile) -> Result<Self> {
-        let mut child = Command::new(executable)
+        let mut command = Command::new(executable);
+        command
             .arg("__wt-worker")
             .env("WT_WORKER_MEMORY_BYTES", memory.worker_bytes.to_string())
             .env("WT_PARENT_MEMORY_BYTES", memory.parent_bytes.to_string())
             .env("WT_TOTAL_MEMORY_BYTES", memory.total_bytes.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        // Make the worker the leader of its own process group so the
+        // watchdog can kill it and anything it forks in one shot; see
+        // `kill_process_tree`.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .with_context(|| format!("unable to spawn worker {}", executable.display()))?;
         let stdin = match child.stdin.take() {
             Some(stdin) => stdin,
             None => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 bail!("worker stdin was not piped");
             }
@@ -570,7 +627,7 @@ impl WorkerProcess {
         let stdout = match child.stdout.take() {
             Some(stdout) => stdout,
             None => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 bail!("worker stdout was not piped");
             }
@@ -601,15 +658,19 @@ impl WorkerProcess {
         })
     }
 
-    fn request(&mut self, request: &WorkerRequest) -> Result<WorkerResult> {
+    fn request(
+        &mut self,
+        request: &WorkerRequest,
+        timeouts: WorkerTimeouts,
+    ) -> Result<WorkerResult> {
         let repository = request.repository
             || request.rules.iter().any(|rule| {
                 rule.manifest.get("execution").and_then(Value::as_str) == Some("repository")
             });
         let timeout = if repository {
-            REPOSITORY_TIMEOUT
+            timeouts.repository
         } else {
-            INVOCATION_TIMEOUT
+            timeouts.invocation
         };
         let _watchdog = ProcessWatchdog::new(Arc::clone(&self.child), timeout);
         self.request_inner(request)
@@ -643,7 +704,7 @@ impl WorkerProcess {
 impl Drop for WorkerProcess {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let _ = child.wait();
         }
     }
@@ -652,15 +713,17 @@ impl Drop for WorkerProcess {
 struct WorkerSlot {
     executable: PathBuf,
     memory: MemoryProfile,
+    timeouts: WorkerTimeouts,
     process: Option<WorkerProcess>,
 }
 
 impl WorkerSlot {
-    fn new(executable: PathBuf, memory: MemoryProfile) -> Result<Self> {
+    fn new(executable: PathBuf, memory: MemoryProfile, timeouts: WorkerTimeouts) -> Result<Self> {
         let process = WorkerProcess::spawn(&executable, memory)?;
         Ok(Self {
             executable,
             memory,
+            timeouts,
             process: Some(process),
         })
     }
@@ -673,7 +736,7 @@ impl WorkerSlot {
             .process
             .as_mut()
             .expect("worker process initialized")
-            .request(request);
+            .request(request, self.timeouts);
         if result.is_err() {
             self.process.take();
         }
@@ -696,6 +759,19 @@ impl Pool {
     }
 
     pub fn with_memory(executable: &Path, jobs: usize, memory: MemoryProfile) -> Result<Self> {
+        Self::with_memory_and_timeouts(executable, jobs, memory, WorkerTimeouts::default())
+    }
+
+    /// Like [`Pool::with_memory`], but with explicit watchdog deadlines
+    /// instead of the production [`WorkerTimeouts::default`]. Intended for
+    /// tests that need to exercise the kill-and-recover path without racing
+    /// the tight production timeouts under heavy machine load.
+    pub fn with_memory_and_timeouts(
+        executable: &Path,
+        jobs: usize,
+        memory: MemoryProfile,
+        timeouts: WorkerTimeouts,
+    ) -> Result<Self> {
         if jobs == 0 {
             bail!("worker pool requires at least one job");
         }
@@ -708,7 +784,11 @@ impl Pool {
         let count = jobs;
         let mut workers = Vec::with_capacity(count);
         for _ in 0..count {
-            workers.push(Mutex::new(WorkerSlot::new(executable.to_owned(), memory)?));
+            workers.push(Mutex::new(WorkerSlot::new(
+                executable.to_owned(),
+                memory,
+                timeouts,
+            )?));
         }
         Ok(Self {
             workers,

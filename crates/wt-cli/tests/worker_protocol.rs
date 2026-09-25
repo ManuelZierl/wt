@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use wt_core::worker::{Pool, SourceFileWire, WorkerRequest, WorkerRule};
+use wt_core::worker::{MemoryProfile, Pool, SourceFileWire, WorkerRequest, WorkerRule};
 
 fn worker_executable() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_wt"))
@@ -114,7 +114,9 @@ fn compile_failure_is_returned_without_input() {
 #[test]
 fn killed_worker_slot_recovers_on_next_request() {
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
     use tempfile::tempdir;
+    use wt_core::worker::WorkerTimeouts;
 
     let directory = tempdir().unwrap();
     let script = directory.path().join("worker.sh");
@@ -123,15 +125,34 @@ fn killed_worker_slot_recovers_on_next_request() {
         // Persist the invocation count in the state file with the fewest
         // possible forks (no `cat`) before ever blocking, so a heavily
         // loaded test machine still records "this is the first launch"
-        // before the watchdog can kill this process.
-        "#!/bin/sh\nstate=\"$0.state\"\ncount=0\nif test -f \"$state\"; then read -r count < \"$state\"; fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$state\"\nwhile IFS= read -r request; do\n  if test \"$count\" -eq 1; then sleep 3; else printf '%s\\n' '{\"results\":[],\"stats\":{}}'; fi\ndone\n",
+        // before the watchdog can kill this process. The first invocation
+        // then sleeps far longer than the watchdog timeout configured below,
+        // so the kill is a deterministic outcome of the timeout firing
+        // rather than a race against how quickly the sleep happens to
+        // finish under load.
+        "#!/bin/sh\nstate=\"$0.state\"\ncount=0\nif test -f \"$state\"; then read -r count < \"$state\"; fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$state\"\nwhile IFS= read -r request; do\n  if test \"$count\" -eq 1; then sleep 30; else printf '%s\\n' '{\"results\":[],\"stats\":{}}'; fi\ndone\n",
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
 
-    let mut pool = Pool::new(&script, 1).unwrap();
+    // Use an explicit, generous watchdog timeout instead of the tight
+    // production `INVOCATION_TIMEOUT` (2s). The production constant leaves
+    // little margin against process-scheduling jitter on a heavily loaded
+    // test machine: both the "kill fires well before the 30s sleep would
+    // end" side and the "the freshly respawned worker replies in time" side
+    // of this test need real wall-clock headroom to be non-flaky under
+    // load, not just under quiet conditions. The watchdog kills the whole
+    // process group (see `kill_process_tree` in wt-core), so this timeout
+    // — not the mock worker's sleep duration — bounds how long the first
+    // `execute` call takes.
+    let timeouts = WorkerTimeouts {
+        invocation: Duration::from_secs(5),
+        repository: Duration::from_secs(5),
+    };
+    let mut pool =
+        Pool::with_memory_and_timeouts(&script, 1, MemoryProfile::default(), timeouts).unwrap();
     assert!(pool.execute(request("bad")).is_err());
     assert!(pool.execute(request("bad")).is_ok());
 }
