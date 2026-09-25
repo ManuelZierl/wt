@@ -14,16 +14,13 @@ pub fn project(mut value: Value, detail: &str) -> Value {
     value["detail"] = json!(detail);
     if command == "check" && value.get("complete").is_some() {
         let full = detail == "full";
-        let suppressed_count = value["suppressed"].as_array().map_or(0, Vec::len);
         let summary = &mut value["summary"];
         summary["raw_occurrences"] = summary["raw_findings"].clone();
         summary["reviewed_occurrences"] = summary["reviewed_findings"].clone();
         summary["actionable_occurrences"] = summary["actionable_findings"].clone();
-        summary["suppressed_occurrences"] = json!(suppressed_count);
-        value["inventory"] =
-            json!({"reviewed":full,"suppressed":full,"files":full,"review_records":full});
+        value["inventory"] = json!({"reviewed":full,"files":full,"review_records":full});
         if !full {
-            for key in ["reviewed", "suppressed", "files", "review_records"] {
+            for key in ["reviewed", "files", "review_records"] {
                 value.as_object_mut().unwrap().remove(key);
             }
         }

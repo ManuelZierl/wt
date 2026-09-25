@@ -28,16 +28,15 @@
         "coordinate_encoding": {"const": "unicode-scalar-columns"},
         "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
         "reviewed": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
-        "suppressed": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
         "files": {"type": "array"}, "review_records": {"type": "array"},
         "errors": {"type": "array"}, "notices": {"type": "array"},
         "rules": {"type": "array"}, "gaps": {"type": "array"},
         "coverage_expectations": {"type": "array"},
-        "summary": {"type": "object", "required": ["raw_occurrences", "actionable_occurrences", "reviewed_occurrences", "suppressed_occurrences", "blocking_diagnostics", "checked_files"]},
-        "inventory": {"type": "object", "additionalProperties": false, "required": ["reviewed", "suppressed", "files", "review_records"], "properties": {"reviewed": {"type": "boolean"}, "suppressed": {"type": "boolean"}, "files": {"type": "boolean"}, "review_records": {"type": "boolean"}}},
+        "summary": {"type": "object", "required": ["raw_occurrences", "actionable_occurrences", "reviewed_occurrences", "blocking_diagnostics", "checked_files"]},
+        "inventory": {"type": "object", "additionalProperties": false, "required": ["reviewed", "files", "review_records"], "properties": {"reviewed": {"type": "boolean"}, "files": {"type": "boolean"}, "review_records": {"type": "boolean"}}},
         "stats": {"type": "object"}
       },
-      "allOf": [{"if": {"properties": {"detail": {"const": "full"}}}, "then": {"required": ["reviewed", "suppressed", "files", "review_records"]}, "else": {"not": {"anyOf": [{"required": ["reviewed"]}, {"required": ["suppressed"]}, {"required": ["files"]}, {"required": ["review_records"]}]}}}]
+      "allOf": [{"if": {"properties": {"detail": {"const": "full"}}}, "then": {"required": ["reviewed", "files", "review_records"]}, "else": {"not": {"anyOf": [{"required": ["reviewed"]}, {"required": ["files"]}, {"required": ["review_records"]}]}}}]
     },
     "command": {
       "type": "object", "additionalProperties": false,

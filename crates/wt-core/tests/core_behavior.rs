@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-use wt_core::{digest_bytes, dispatch};
+use wt_core::dispatch;
 
 fn submission(id: &str, code: &str) -> serde_json::Value {
     serde_json::json!({
@@ -135,7 +135,7 @@ fn git_and_non_git_ignore_keep_tracked_files() {
 }
 
 #[test]
-fn scope_excludes_unrelated_gaps_and_waivers_rerender() {
+fn scope_excludes_unrelated_gaps() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
     fs::create_dir(root.path().join("src")).unwrap();
@@ -157,37 +157,6 @@ fn scope_excludes_unrelated_gaps_and_waivers_rerender() {
     );
     assert_eq!(result["exit_code"], 0, "{result}");
     assert_eq!(result["summary"]["analysis_gaps"], 0);
-
-    fs::write(root.path().join("src/a.txt"), "bad").unwrap();
-    let waiver = serde_json::json!({"schema_version": 1, "waivers": [{
-        "id": "w1", "rule_id": "local/scoped", "code": "hit", "path": "src/a.txt",
-        "matched_text_digest": digest_bytes(b"bad"), "reason": "known test exception"
-    }]});
-    fs::write(
-        root.path().join(".wt/waivers.json"),
-        serde_json::to_vec_pretty(&waiver).unwrap(),
-    )
-    .unwrap();
-    let waived = check(
-        root.path(),
-        global.path(),
-        serde_json::json!({"max_file_bytes": 4}),
-    );
-    assert_eq!(waived["exit_code"], 0, "{waived}");
-    assert!(waived["diagnostics"].as_array().unwrap().is_empty());
-    assert_eq!(waived["suppressed"].as_array().unwrap().len(), 1);
-
-    fs::write(root.path().join("src/a.txt"), "ok").unwrap();
-    let stale = check(
-        root.path(),
-        global.path(),
-        serde_json::json!({"max_file_bytes": 4}),
-    );
-    assert!(stale["notices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|notice| notice == "w1"));
 }
 
 #[test]

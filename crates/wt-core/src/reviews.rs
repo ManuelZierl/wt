@@ -248,12 +248,7 @@ pub struct Application {
     pub evidence_reads: usize,
 }
 
-pub fn apply(
-    root: &Path,
-    diagnostics: Vec<Value>,
-    suppressed: &[Value],
-    store: &Store,
-) -> Result<Application> {
+pub fn apply(root: &Path, diagnostics: Vec<Value>, store: &Store) -> Result<Application> {
     let mut result = Application {
         diagnostics: Vec::new(),
         reviewed: Vec::new(),
@@ -360,11 +355,7 @@ pub fn apply(
         if observed.contains(id) {
             continue;
         }
-        let validity = if suppressed.iter().any(|f| f["finding_id"] == *id) {
-            "waived"
-        } else {
-            "not_observed"
-        };
+        let validity = "not_observed";
         result
             .records
             .push(json!({"finding_id":id,"decision":stored.record.decision,

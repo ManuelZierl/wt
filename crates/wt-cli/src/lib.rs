@@ -47,7 +47,6 @@ pub enum SchemaName {
     Config,
     Result,
     Plan,
-    Waivers,
     Review,
     Capabilities,
 }
@@ -187,8 +186,6 @@ pub enum Command {
         jobs: Option<u64>,
         #[arg(long = "max-file-bytes", value_name = "N")]
         max_file_bytes: Option<u64>,
-        #[arg(long = "show-suppressed")]
-        show_suppressed: bool,
         #[arg(long = "show-reviewed")]
         show_reviewed: bool,
         #[arg(long = "allow-empty")]
@@ -331,12 +328,8 @@ where
 fn execute(cli: Cli) -> i32 {
     let command = command_string(&cli.command);
     let display = match &cli.command {
-        Command::Check {
-            show_reviewed,
-            show_suppressed,
-            ..
-        } => (*show_reviewed, *show_suppressed),
-        _ => (false, false),
+        Command::Check { show_reviewed, .. } => *show_reviewed,
+        _ => false,
     };
     if let Command::Schema { name } = &cli.command {
         return print_bundled_schema(name);
@@ -386,7 +379,6 @@ fn print_bundled_schema(name: &SchemaName) -> i32 {
         SchemaName::Config => include_str!("../../../schemas/config.schema.json"),
         SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
         SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
-        SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
         SchemaName::Review => include_str!("../../../schemas/review.schema.json"),
         SchemaName::Capabilities => include_str!("../../../schemas/capabilities.schema.json"),
     };
@@ -495,7 +487,6 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             base,
             jobs,
             max_file_bytes,
-            show_suppressed,
             show_reviewed,
             allow_empty,
             stats,
@@ -535,11 +526,8 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             if let Some(max_file_bytes) = max_file_bytes {
                 object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
             }
-            insert_if_true(&mut object, "show_suppressed", *show_suppressed);
             insert_if_true(&mut object, "show_reviewed", *show_reviewed);
-            if matches!(cli.common.format, OutputFormat::Text)
-                && (*show_reviewed || *show_suppressed)
-            {
+            if matches!(cli.common.format, OutputFormat::Text) && *show_reviewed {
                 object.insert("detail".to_owned(), json!("full"));
             }
             insert_if_true(&mut object, "allow_empty", *allow_empty);
@@ -716,7 +704,7 @@ fn finish(
     format: &OutputFormat,
     color: &ColorMode,
     command: &str,
-    display: (bool, bool),
+    display: bool,
     result: anyhow::Result<Value>,
 ) -> i32 {
     let value = match result {
@@ -758,7 +746,7 @@ fn print_json(value: &Value) {
     }
 }
 
-fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
+fn print_text(value: &Value, color: &ColorMode, display: bool) {
     if let Some(error) = value
         .get("error")
         .or_else(|| value["errors"].get(0).and_then(|e| e.get("error")))
@@ -828,20 +816,10 @@ fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
                 println!("analysis error: {}", error);
             }
         }
-        if display.0 {
+        if display {
             for finding in value["reviewed"].as_array().into_iter().flatten() {
                 println!(
                     "REVIEWED {}:{} {}",
-                    finding["path"].as_str().unwrap_or("<unknown>"),
-                    finding["start_line"],
-                    finding["rule_id"].as_str().unwrap_or("<unknown>")
-                );
-            }
-        }
-        if display.1 {
-            for finding in value["suppressed"].as_array().into_iter().flatten() {
-                println!(
-                    "WAIVED {}:{} {}",
                     finding["path"].as_str().unwrap_or("<unknown>"),
                     finding["start_line"],
                     finding["rule_id"].as_str().unwrap_or("<unknown>")
@@ -993,7 +971,6 @@ fn schema_string(value: &SchemaName) -> &'static str {
         SchemaName::Config => "config",
         SchemaName::Result => "result",
         SchemaName::Plan => "plan",
-        SchemaName::Waivers => "waivers",
         SchemaName::Review => "review",
         SchemaName::Capabilities => "capabilities",
     }

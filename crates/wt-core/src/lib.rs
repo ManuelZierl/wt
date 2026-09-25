@@ -2,7 +2,7 @@
 //!
 //! The CLI is deliberately a thin adapter.  It parses command-line syntax and
 //! supplies an options object; this crate owns validation, filesystem policy,
-//! execution, and the schema-v2 result envelopes.
+//! execution, and the result envelopes.
 
 mod cache;
 mod config;
@@ -17,7 +17,6 @@ mod reviews;
 mod rule;
 mod runner;
 mod selection;
-mod waivers;
 pub mod worker;
 
 use anyhow::{anyhow, Result};
@@ -30,10 +29,10 @@ use std::fmt;
 pub use digest::{digest_bytes, digest_package, digest_text};
 
 /// The single contract version shared by every wt document kind: rule and
-/// submission packages, configuration, fixtures/tests, review records, the
-/// result protocol, and waivers. wt has no external users, so there is no
-/// reason to version these independently; a breaking change to any one of
-/// them bumps this constant for all of them.
+/// submission packages, configuration, fixtures/tests, review records, and
+/// the result protocol. wt has no external users, so there is no reason to
+/// version these independently; a breaking change to any one of them bumps
+/// this constant for all of them.
 pub const CONTRACT_VERSION: u64 = 1;
 
 /// Return the installed rule/submission schema. wt accepts exactly

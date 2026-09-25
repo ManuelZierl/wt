@@ -8,7 +8,6 @@ use std::process::Command;
 #[derive(Clone)]
 pub struct Workspace {
     pub root: PathBuf,
-    pub local_dir: PathBuf,
     pub global_config: Option<config::ConfigFile>,
     pub local_config: Option<config::ConfigFile>,
     pub effective_config: EffectiveConfig,
@@ -55,7 +54,6 @@ pub fn discover(options: &serde_json::Value) -> Result<Workspace> {
     }
     Ok(Workspace {
         root,
-        local_dir,
         global_config,
         local_config,
         effective_config,

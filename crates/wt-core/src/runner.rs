@@ -6,7 +6,6 @@ use crate::fixtures;
 use crate::reviews;
 use crate::rule::{self, RulePackage, Submission};
 use crate::selection::{self, SelectedFile};
-use crate::waivers;
 use anyhow::{anyhow, bail, Result};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde_json::{json, Map, Value};
@@ -101,7 +100,6 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "base",
             "jobs",
             "max_file_bytes",
-            "show_suppressed",
             "show_reviewed",
             "allow_empty",
             "stats",
@@ -791,22 +789,13 @@ fn check(options: &Value) -> Result<Value> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    let waiver_file = if preview {
-        None
-    } else {
-        waivers::load(&workspace.local_dir.join("waivers.json"))?
-    };
-    let (diagnostics, suppressed, stale) =
-        render_records(&records, &workspace, waiver_file.as_ref(), options)?;
-    if !stale.is_empty() && bool_option(options, "strict", false)? {
-        errors.push(json!({"error": "stale_waivers", "waivers": stale}));
-    }
+    let diagnostics = render_records(&records, &workspace, options)?;
     let review_result = (if preview {
         Ok(reviews::Store::default())
     } else {
         reviews::load(&workspace.root)
     })
-    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &suppressed, &store));
+    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &store));
     let (diagnostics, reviewed, review_records, evidence_reads) = match review_result {
         Ok(state) => (
             state.diagnostics,
@@ -819,7 +808,7 @@ fn check(options: &Value) -> Result<Value> {
             (diagnostics, Vec::new(), Vec::new(), None)
         }
     };
-    let mut notices = stale.clone();
+    let mut notices = Vec::new();
     notices.extend(cache.notices.clone());
     let partial_policy = selection.partial || requested.is_some() || preview;
     let coverage_expectations = workspace.effective_config.expectations.iter().map(|entry| {
@@ -927,14 +916,13 @@ fn check(options: &Value) -> Result<Value> {
         "coverage_expectations": coverage_expectations,
         "coordinate_encoding": "unicode-scalar-columns",
         "diagnostics": diagnostics,
-        "suppressed": suppressed,
         "reviewed": reviewed,
         "review_records": review_records,
         "notices": notices,
         "errors": errors,
         "rules": rule_summaries,
         "files": selection.coverage,
-        "summary": {"raw_findings": diagnostics.len()+reviewed.len()+suppressed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
+        "summary": {"raw_findings": diagnostics.len()+reviewed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
         "gaps": relevant_gaps,
     });
     if bool_option(options, "stats", false)? {
@@ -1403,7 +1391,6 @@ fn schema(options: &Value) -> Result<Value> {
         "config" => include_str!("../../../schemas/config.schema.json"),
         "result" => include_str!("../../../schemas/result.schema.json"),
         "plan" => include_str!("../../../schemas/plan.schema.json"),
-        "waivers" => include_str!("../../../schemas/waivers.schema.json"),
         "review" => include_str!("../../../schemas/review.schema.json"),
         "capabilities" => include_str!("../../../schemas/capabilities.schema.json"),
         _ => bail!("unknown schema {name:?}"),
@@ -1438,7 +1425,7 @@ fn capabilities() -> Result<Value> {
     Ok(
         json!({"schema_version":crate::CONTRACT_VERSION,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
         "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_protocol","candidate_preview","configurable_logical_budgets"],
-        "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"waivers":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
+        "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
         "language":"wt-rule-1", "helpers":["text.v1","jsx.v1"],
         "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
         "guide_digests":{
@@ -1649,9 +1636,8 @@ fn add_records<'a>(
 fn render_records(
     records: &[Record],
     workspace: &Workspace,
-    waiver_file: Option<&waivers::WaiverFile>,
     options: &Value,
-) -> Result<(Vec<Value>, Vec<Value>, Vec<String>)> {
+) -> Result<Vec<Value>> {
     let mut ordered = records.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
         (
@@ -1676,70 +1662,10 @@ fn render_records(
             && right.diagnostic.start_byte == left.diagnostic.start_byte
             && right.diagnostic.end_byte == left.diagnostic.end_byte
     });
-    let mut groups: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
-    for (index, record) in ordered.iter().enumerate() {
-        groups
-            .entry((
-                record.rule_id.clone(),
-                record.diagnostic.code.clone(),
-                record.diagnostic.path.clone(),
-            ))
-            .or_default()
-            .push(index);
-    }
-    let mut suppressed_indices = HashSet::new();
-    let mut suppressed = Vec::new();
-    let mut stale = Vec::new();
-    let mut considered = HashSet::new();
-    for ((rule_id, code, path), indexes) in groups {
-        considered.insert((rule_id.clone(), code.clone(), path.clone()));
-        let digests = indexes
-            .iter()
-            .map(|index| ordered[*index].matched_digest.clone())
-            .collect::<Vec<_>>();
-        let application = waivers::apply(waiver_file, &rule_id, &code, &path, &digests, |_| {})?;
-        if waiver_file.is_some() {
-            for (waiver_id, local_index) in application
-                .suppressed
-                .iter()
-                .zip(application.suppressed_indices)
-            {
-                if let Some(index) = indexes.get(local_index) {
-                    suppressed_indices.insert(*index);
-                    let mut diagnostic = diagnostic_value(ordered[*index], workspace, options)?;
-                    diagnostic["waiver_id"] = json!(waiver_id);
-                    diagnostic["blocking"] = json!(false);
-                    suppressed.push(diagnostic);
-                }
-            }
-        }
-        stale.extend(application.stale);
-    }
-    if let Some(file) = waiver_file {
-        for waiver in &file.waivers {
-            let key = (
-                waiver.rule_id.clone(),
-                waiver.code.clone(),
-                waiver.path.clone(),
-            );
-            if !considered.contains(&key)
-                && !suppressed
-                    .iter()
-                    .any(|value| value["waiver_id"] == waiver.id)
-            {
-                stale.push(waiver.id.clone());
-            }
-        }
-    }
-    stale.sort();
-    stale.dedup();
-    let diagnostics = ordered
+    ordered
         .iter()
-        .enumerate()
-        .filter(|(index, _)| !suppressed_indices.contains(index))
-        .map(|(_, record)| diagnostic_value(record, workspace, options))
-        .collect::<Result<Vec<_>>>()?;
-    Ok((diagnostics, suppressed, stale))
+        .map(|record| diagnostic_value(record, workspace, options))
+        .collect::<Result<Vec<_>>>()
 }
 
 fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> Result<Value> {
@@ -2028,7 +1954,7 @@ fn review(options: &Value) -> Result<Value> {
         .filter(|f| f["finding_id"] == id)
         .collect::<Vec<_>>();
     if findings.len() != 1 {
-        bail!("finding is absent, waived, or ambiguous; run check again");
+        bail!("finding is absent or ambiguous; run check again");
     }
     let finding = findings[0];
     let workspace = discovery::discover(options)?;
@@ -2089,7 +2015,6 @@ fn inspect(options: &Value) -> Result<Value> {
         .into_iter()
         .flatten()
         .chain(checked["reviewed"].as_array().into_iter().flatten())
-        .chain(checked["suppressed"].as_array().into_iter().flatten())
         .filter(|finding| finding["finding_id"] == id)
         .collect::<Vec<_>>();
     if findings.len() > 1 {

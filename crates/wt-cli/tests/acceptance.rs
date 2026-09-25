@@ -492,31 +492,15 @@ fn changed_empty_work_is_no_work_but_full_empty_scan_is_incomplete() {
 }
 
 #[test]
-fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
+fn findings_retain_full_fields_and_unicode_scalar_coordinates() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
     std::fs::write(root.path().join("unicode.txt"), "λ bad\n").unwrap();
     create_rule(
         root.path(),
         global.path(),
-        &text_submission("unicode-waiver", "enforced"),
+        &text_submission("unicode-finding", "enforced"),
     );
-    let waiver = json!({
-        "schema_version": 1,
-        "waivers": [{
-            "id": "known-unicode-case",
-            "rule_id": "local/unicode-waiver",
-            "code": "hit",
-            "path": "unicode.txt",
-            "matched_text_digest": wt_core::digest_bytes(b"bad"),
-            "reason": "Reviewed Unicode coordinate case"
-        }]
-    });
-    std::fs::write(
-        root.path().join(".wt/waivers.json"),
-        serde_json::to_vec_pretty(&waiver).unwrap(),
-    )
-    .unwrap();
 
     let output = invoke(
         root.path(),
@@ -524,7 +508,7 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         &[
             "check",
             "--rule",
-            "local/unicode-waiver",
+            "local/unicode-finding",
             "--no-global",
             "--no-cache",
             "--format",
@@ -532,11 +516,10 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         ],
         None,
     );
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
     let value = assert_result(&output);
-    assert!(value["diagnostics"].as_array().unwrap().is_empty());
-    assert_eq!(value["suppressed"].as_array().unwrap().len(), 1);
-    let suppressed = &value["suppressed"][0];
+    assert_eq!(value["diagnostics"].as_array().unwrap().len(), 1);
+    let finding = &value["diagnostics"][0];
     for field in [
         "rule_id",
         "rule_digest",
@@ -555,21 +538,19 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         "end_column",
         "message",
         "help",
-        "waiver_id",
     ] {
         assert!(
-            suppressed.get(field).is_some(),
-            "missing suppressed field {field}: {suppressed}"
+            finding.get(field).is_some(),
+            "missing diagnostic field {field}: {finding}"
         );
     }
-    assert_eq!(suppressed["waiver_id"], "known-unicode-case");
-    assert_eq!(suppressed["start_byte"], 3);
-    assert_eq!(suppressed["end_byte"], 6);
-    assert_eq!(suppressed["start_line"], 1);
-    assert_eq!(suppressed["start_column"], 3);
-    assert_eq!(suppressed["end_line"], 1);
-    assert_eq!(suppressed["end_column"], 6);
-    assert_eq!(suppressed["blocking"], false);
+    assert_eq!(finding["start_byte"], 3);
+    assert_eq!(finding["end_byte"], 6);
+    assert_eq!(finding["start_line"], 1);
+    assert_eq!(finding["start_column"], 3);
+    assert_eq!(finding["end_line"], 1);
+    assert_eq!(finding["end_column"], 6);
+    assert_eq!(finding["blocking"], true);
     assert_eq!(value["coordinate_encoding"], "unicode-scalar-columns");
     assert!(value["effective_policy"].is_object());
     assert!(value["notices"].is_array());

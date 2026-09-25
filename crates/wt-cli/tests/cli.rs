@@ -590,7 +590,6 @@ fn schema_command_prints_the_bundled_schema_verbatim() {
         ("config", "config.schema.json"),
         ("result", "result.schema.json"),
         ("plan", "plan.schema.json"),
-        ("waivers", "waivers.schema.json"),
     ] {
         let expected = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
