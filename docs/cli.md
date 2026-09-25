@@ -22,7 +22,7 @@ files: an empty file can still be held by another process.
 
 ## Supported Command Mapping
 
-The command list follows `watchtower-spec-v3.md` section 9.1: `init`, `capabilities`, `guide`, `new`, `check`, `plan`, `list`, `show`, `validate`, `test`, `update`, `review`, `reviews`, `inspect`, `fmt`, `set-mode`, `explain`, `config`, `schema`, and `cache clear`. Command-specific options are rejected by Clap or by the core option validator rather than ignored.
+The command list follows [`docs/spec.md`](spec.md) section 8.1: `init`, `capabilities`, `guide`, `new`, `check`, `plan`, `stats`, `list`, `show`, `validate`, `test`, `update`, `review`, `reviews`, `inspect`, `fmt`, `set-mode`, `explain`, `config`, `schema`, and `cache clear`. Command-specific options are rejected by Clap or by the core option validator rather than ignored.
 
 The CLI forwards explicit `--jobs 1..=3`; when omitted, the core chooses `min(available CPUs, admitted workers)`. Configuration supports bounded file/repository execution limits, worker/parent/total memory reservations, and `optimizer.mode`; see [runtime configuration](runtime-configuration.md). `--optimizer off` is the semantic reference path; explicit `--optimizer auto` overrides a configured `off`. `--no-cache` disables persistent raw-result caching while retaining in-run execution semantics. `--changed` narrows file-local work but keeps repository-rule dependencies in full scope.
 
