@@ -6,6 +6,8 @@
   documented by an immediately preceding ``<!-- docs-test: ... -->`` marker
   (``exit=N`` for a documented nonzero exit, or ``skip`` for a command that
   is intentionally not runnable offline, such as the install curl line).
+  When a ```json block directly follows a command block, the command's
+  stdout must parse to exactly that JSON (one or more values, in order).
 - Confirms both files under skills/wt/references/ validate and install with
   ``wt new``.
 - Confirms every relative link in a tracked Markdown file resolves to a real
@@ -14,6 +16,7 @@
 
 Runs entirely offline against the binaries in target/release/.
 """
+import json
 import os
 import re
 import shutil
@@ -26,10 +29,11 @@ SKILL_SIZE_LIMIT = 4096
 
 FENCE_RE = re.compile(r"```(?:bash|sh)\n(.*?)```", re.S)
 MARKER_RE = re.compile(r"<!--\s*docs-test:\s*(.*?)\s*-->")
+OUTPUT_RE = re.compile(r"\s*```json\n(.*?)```", re.S)
 
 
 def extract_blocks(path):
-    """Return [(command_text, marker_or_None), ...] in document order."""
+    """Return [(command_text, marker_or_None, expected_json_or_None), ...]."""
     text = open(path, encoding="utf-8").read()
     blocks = []
     for m in FENCE_RE.finditer(text):
@@ -40,7 +44,8 @@ def extract_blocks(path):
             last = markers[-1]
             if preceding[last.end():].strip() == "":
                 marker = last.group(1).strip()
-        blocks.append((m.group(1).rstrip("\n"), marker))
+        output = OUTPUT_RE.match(text, m.end())
+        blocks.append((m.group(1).rstrip("\n"), marker, output.group(1) if output else None))
     return blocks
 
 
@@ -56,27 +61,53 @@ def run_block(command_text, cwd, env):
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,
         timeout=600,
     )
-    return proc.returncode, proc.stdout.decode("utf-8", "replace")
+    out = proc.stdout.decode("utf-8", "replace")
+    err = proc.stderr.decode("utf-8", "replace")
+    return proc.returncode, out, err
+
+
+def json_values(text):
+    decoder = json.JSONDecoder()
+    values, pos = [], 0
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos == len(text):
+            return values
+        value, pos = decoder.raw_decode(text, pos)
+        values.append(value)
 
 
 def check_doc_commands(doc_label, doc_path, cwd_for, env, failures):
-    for i, (block, marker) in enumerate(extract_blocks(doc_path), start=1):
+    for i, (block, marker, expected) in enumerate(extract_blocks(doc_path), start=1):
         kind = (marker.split()[0] if marker else None)
         if kind == "skip":
             print(f"[SKIP] {doc_label} block {i} (marked not runnable: {marker})")
             continue
         want = expected_exit(marker)
         cwd = cwd_for(block)
-        rc, out = run_block(block, cwd, env)
-        if rc == want:
-            print(f"[OK]   {doc_label} block {i} (exit {rc})")
-        else:
+        rc, out, err = run_block(block, cwd, env)
+        if rc != want:
             print(f"[FAIL] {doc_label} block {i} (expected exit {want}, got {rc})")
-            print(textwrap_indent(out))
+            print(textwrap_indent(out + err))
             failures.append(f"{doc_label} block {i}")
+            continue
+        if expected is not None:
+            try:
+                same = json_values(out) == json_values(expected)
+            except ValueError:
+                same = False
+            if not same:
+                print(f"[FAIL] {doc_label} block {i} output differs from the documented JSON")
+                print(textwrap_indent(out + err))
+                failures.append(f"{doc_label} block {i} output")
+                continue
+            print(f"[OK]   {doc_label} block {i} (exit {rc}, output matches)")
+            continue
+        print(f"[OK]   {doc_label} block {i} (exit {rc})")
 
 
 def textwrap_indent(text, prefix="    "):
@@ -89,17 +120,17 @@ def check_reference_submissions(env, failures):
         ref = os.path.join(refs_dir, name)
         with tempfile.TemporaryDirectory(prefix="wt-docs-ref-") as tmp:
             cmd = f'wt validate --file "{ref}" --format json'
-            rc, out = run_block(cmd, tmp, env)
+            rc, out, err = run_block(cmd, tmp, env)
             if rc != 0:
                 print(f"[FAIL] reference {name}: wt validate exited {rc}")
-                print(textwrap_indent(out))
+                print(textwrap_indent(out + err))
                 failures.append(f"reference {name} validate")
                 continue
             cmd = f'wt new --stdin --format json < "{ref}"'
-            rc, out = run_block(cmd, tmp, env)
+            rc, out, err = run_block(cmd, tmp, env)
             if rc != 0:
                 print(f"[FAIL] reference {name}: wt new exited {rc}")
-                print(textwrap_indent(out))
+                print(textwrap_indent(out + err))
                 failures.append(f"reference {name} new")
                 continue
             print(f"[OK]   reference {name} validates and installs")

@@ -6,7 +6,7 @@
   "mode": "advisory",
   "severity": "warning",
   "execution": "file",
-  "scope": {"include": ["**/*.py"]},
+  "scope": {"include": ["app/**/*.py"]},
   "diagnostics": {
     "possible-n-plus-one": {
       "kind": "review",
