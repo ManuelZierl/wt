@@ -2,7 +2,7 @@
 //!
 //! The CLI is deliberately a thin adapter.  It parses command-line syntax and
 //! supplies an options object; this crate owns validation, filesystem policy,
-//! execution, and the schema-v2 result envelopes.
+//! execution, and the result envelopes.
 
 mod cache;
 mod config;
@@ -17,7 +17,6 @@ mod reviews;
 mod rule;
 mod runner;
 mod selection;
-mod waivers;
 pub mod worker;
 
 use anyhow::{anyhow, Result};
@@ -29,32 +28,25 @@ use std::fmt;
 
 pub use digest::{digest_bytes, digest_package, digest_text};
 
-/// Return the installed, version-pinned rule/submission schema projection.
-/// The shared definition is bundled once; each advertised version fixes the
-/// version tag and excludes the other version's authoritative prose fields.
+/// The single contract version shared by every wt document kind: rule and
+/// submission packages, configuration, fixtures/tests, review records, and
+/// the result protocol. wt has no external users, so there is no reason to
+/// version these independently; a breaking change to any one of them bumps
+/// this constant for all of them.
+pub const CONTRACT_VERSION: u64 = 1;
+
+/// Return the installed rule/submission schema. wt accepts exactly
+/// `CONTRACT_VERSION`; any other requested version is an error.
 pub fn package_schema(name: &str, version: u64) -> Result<Value> {
     let source = match name {
         "rule" => include_str!("../../../schemas/rule.schema.json"),
         "submission" => include_str!("../../../schemas/submission.schema.json"),
         _ => return Err(anyhow!("unknown package schema {name}")),
     };
-    if !matches!(version, 2 | 3) {
+    if version != CONTRACT_VERSION {
         return Err(anyhow!("unsupported {name} schema version {version}"));
     }
-    let mut schema = parse_json(source)?;
-    schema["$id"] = serde_json::json!(format!(
-        "https://watchtower.local/schemas/{name}-v{version}.schema.json"
-    ));
-    schema["properties"]["schema_version"] = serde_json::json!({"const":version});
-    let properties = schema["properties"].as_object_mut().unwrap();
-    if version == 2 {
-        properties.remove("documentation");
-    } else {
-        for key in ["description", "rationale", "limitations"] {
-            properties.remove(key);
-        }
-    }
-    Ok(schema)
+    parse_json(source)
 }
 
 /// Parse strict JSON, including rejecting duplicate object keys at every level.
@@ -182,35 +174,21 @@ pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
     if !options.is_object() {
         return Err(anyhow!("options must be a JSON object"));
     }
-    let version = options
-        .get("output_version")
-        .and_then(Value::as_u64)
-        .unwrap_or(2);
-    let detail = options.get("detail").and_then(Value::as_str).unwrap_or(
-        if options.get("output_version").is_none() {
-            "full"
-        } else {
-            "summary"
-        },
-    );
+    let detail = options
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or("summary");
     let result = match runner::dispatch(command, options) {
         Ok(value) => value,
         Err(error) => serde_json::json!({
-            "schema_version": 2,
+            "schema_version": CONTRACT_VERSION,
             "command": command,
             "status": "error",
             "exit_code": 2,
             "error": error.to_string()
         }),
     };
-    match protocol::project(result, version, detail) {
-        Ok(value) => Ok(value),
-        Err(error) => protocol::project(
-            serde_json::json!({"schema_version":2,"command":command,"status":"error","exit_code":2,"error":error.to_string()}),
-            version,
-            detail,
-        ),
-    }
+    Ok(protocol::project(result, detail))
 }
 
 #[cfg(test)]
@@ -224,9 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_always_returns_schema_v2_for_command_errors() {
+    fn dispatch_always_stamps_the_contract_version_for_command_errors() {
         let result = dispatch("not-a-command", &serde_json::json!({})).unwrap();
-        assert_eq!(result["schema_version"], 2);
+        assert_eq!(result["schema_version"], CONTRACT_VERSION);
         assert_eq!(result["exit_code"], 2);
     }
 }

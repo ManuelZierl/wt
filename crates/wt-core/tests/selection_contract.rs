@@ -40,7 +40,8 @@ fn check(
     let mut options = serde_json::json!({
         "root": root,
         "global_dir": global,
-        "allow_empty": true
+        "allow_empty": true,
+        "detail": "full"
     });
     for (key, value) in extra.as_object().unwrap() {
         options[key] = value.clone();
@@ -64,18 +65,18 @@ fn local_scalar_fields_do_not_reset_global_values() {
     fs::create_dir(root.path().join(".wt")).unwrap();
     fs::write(
         global.path().join("config.json"),
-        r#"{"schema_version":2,"scan":{"max_file_bytes":17}}"#,
+        r#"{"schema_version":1,"scan":{"max_file_bytes":17}}"#,
     )
     .unwrap();
     fs::write(
         root.path().join(".wt/config.json"),
-        r#"{"schema_version":2,"scan":{"exclude":[]}}"#,
+        r#"{"schema_version":1,"scan":{"exclude":[]}}"#,
     )
     .unwrap();
 
     let result = config(root.path(), global.path(), false);
     assert_eq!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["scan"]["max_file_bytes"], 17);
+    assert_eq!(result["data"]["scan"]["max_file_bytes"], 17);
 }
 
 #[test]
@@ -88,7 +89,7 @@ fn configured_exclusions_are_component_globs_and_report_origin() {
     fs::write(root.path().join("generated/deep/two.txt"), "x").unwrap();
     fs::write(
         root.path().join(".wt/config.json"),
-        r#"{"schema_version":2,"scan":{"exclude":[{"glob":"generated/*","reason":"generated output"}]}}"#,
+        r#"{"schema_version":1,"scan":{"exclude":[{"glob":"generated/*","reason":"generated output"}]}}"#,
     )
     .unwrap();
 
@@ -98,9 +99,18 @@ fn configured_exclusions_are_component_globs_and_report_origin() {
         "generated/one.txt",
         serde_json::json!({}),
     );
-    assert_eq!(excluded["selection"][0]["status"], "excluded", "{excluded}");
-    assert_eq!(excluded["selection"][0]["reason"], "generated output");
-    assert_eq!(excluded["selection"][0]["origin"], "config.scan.exclude");
+    assert_eq!(
+        excluded["data"]["selection"][0]["status"], "excluded",
+        "{excluded}"
+    );
+    assert_eq!(
+        excluded["data"]["selection"][0]["reason"],
+        "generated output"
+    );
+    assert_eq!(
+        excluded["data"]["selection"][0]["origin"],
+        "config.scan.exclude"
+    );
 
     let nested = explain(
         root.path(),
@@ -108,7 +118,10 @@ fn configured_exclusions_are_component_globs_and_report_origin() {
         "generated/deep/two.txt",
         serde_json::json!({}),
     );
-    assert_eq!(nested["selection"][0]["status"], "checked", "{nested}");
+    assert_eq!(
+        nested["data"]["selection"][0]["status"], "checked",
+        "{nested}"
+    );
 }
 
 #[test]
@@ -137,14 +150,20 @@ fn tracked_ignored_files_are_kept_and_nested_repositories_are_boundaries() {
         "untracked.txt",
         serde_json::json!({}),
     );
-    assert_eq!(ignored["selection"][0]["status"], "ignored", "{ignored}");
+    assert_eq!(
+        ignored["data"]["selection"][0]["status"], "ignored",
+        "{ignored}"
+    );
     let tracked = explain(
         root.path(),
         global.path(),
         "ignored.txt",
         serde_json::json!({}),
     );
-    assert_eq!(tracked["selection"][0]["status"], "checked", "{tracked}");
+    assert_eq!(
+        tracked["data"]["selection"][0]["status"], "checked",
+        "{tracked}"
+    );
     let boundary = explain(
         root.path(),
         global.path(),
@@ -152,7 +171,7 @@ fn tracked_ignored_files_are_kept_and_nested_repositories_are_boundaries() {
         serde_json::json!({}),
     );
     assert_eq!(
-        boundary["selection"][0]["reason"], "nested_repository",
+        boundary["data"]["selection"][0]["reason"], "nested_repository",
         "{boundary}"
     );
 }
@@ -162,7 +181,7 @@ fn oversized_initial_nul_is_binary_without_an_unbounded_read() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
     fs::write(root.path().join("blob.bin"), [0, b'x', b'x', b'x', b'x']).unwrap();
-    let submission = serde_json::json!({"schema_version":2,"id":"binary-domain","title":"Text domain","description":"Exercise binary selection","rationale":"Binary data is not text","severity":"warning","scope":{"include":["**"]},"diagnostics":{"unexpected":{"kind":"violation","message":"unexpected","help":"inspect"}},"limitations":[],"code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"return;"}});
+    let submission = serde_json::json!({"schema_version":1,"id":"binary-domain","title":"Text domain","documentation":{"source":"# Text domain\n\nExercise binary selection. Binary data is not text.\n"},"severity":"warning","scope":{"include":["**"]},"diagnostics":{"unexpected":{"kind":"violation","message":"unexpected","help":"inspect"}},"code":{"language":"wt-rule-1","capabilities":["text.v1"],"source":"return;"}});
     let created = dispatch(
         "new",
         &serde_json::json!({"root":root.path(),"global_dir":global.path(),"submission":submission}),
@@ -190,10 +209,10 @@ fn no_global_reports_inactive_global_overrides() {
     .unwrap();
     fs::write(
         root.path().join(".wt/config.json"),
-        r#"{"schema_version":2,"rules":{"mode_overrides":{"global/missing":{"mode":"advisory","reason":"fixture"}}}}"#,
+        r#"{"schema_version":1,"rules":{"mode_overrides":{"global/missing":{"mode":"advisory","reason":"fixture"}}}}"#,
     )
     .unwrap();
     let result = config(root.path(), global.path(), true);
     assert_eq!(result["exit_code"], 0, "{result}");
-    assert_eq!(result["inactive_overrides"][0], "global/missing");
+    assert_eq!(result["data"]["inactive_overrides"][0], "global/missing");
 }

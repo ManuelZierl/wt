@@ -12,7 +12,6 @@ fn invoke(
     command
         .current_dir(root)
         .args(args)
-        .args(["--output-version", "2"])
         .args(if args.contains(&"check") {
             &["--detail", "full"][..]
         } else {
@@ -52,21 +51,19 @@ fn json_output(output: &Output) -> Value {
 
 fn submission(id: &str, marker: &str, diagnostic: &str) -> String {
     json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": id,
         "title": id,
-        "description": "A shared-query integration rule.",
-        "rationale": "The test needs an independent predicate over a common request query.",
+        "documentation": {"source": "# Shared query\n\n## Description\n\nA shared-query integration rule.\n\n## Rationale\n\nThe test needs an independent predicate over a common request query.\n\n## Limitations\n\nOnly text files are inspected.\n"},
         "mode": "advisory",
         "severity": "warning",
         "execution": "file",
         "scope": {"include": ["**/*.txt"]},
         "patterns": {"local_pattern": "request\\([^\\r\\n]*\\)"},
         "diagnostics": {diagnostic: {"kind": "violation", "message": "marker found", "help": "review it"}},
-        "limitations": ["Only text files are inspected."],
-        "code": {"language": "wt-rule-1", "capabilities": ["regex.v1", "text.v1"], "source": format!("for matched in rx::find_all(file, \"local_pattern\") {{ if matched.text.contains(\"{marker}\") {{ emit(matched.span, \"{diagnostic}\"); }} }}")},
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": format!("for matched in rx::find_all(file, \"local_pattern\") {{ if matched.text.contains(\"{marker}\") {{ emit(matched.span, \"{diagnostic}\"); }} }}")},
         "tests": {
-            "schema_version": 2,
+            "schema_version": 1,
             "cases": [
                 {"name": "positive", "files": [{"path": "fixture.txt", "content": format!("request(\"{marker}\")") }], "expect": [{"path": "fixture.txt", "code": diagnostic, "kind": "violation"}]},
                 {"name": "negative", "files": [{"path": "fixture.txt", "content": "request(\"other\")"}], "expect": []}
@@ -92,7 +89,7 @@ fn cli_creates_shows_tests_checks_and_shares_queries() {
             Some(document),
         );
         assert_eq!(output.status.code(), Some(0), "{output:?}");
-        assert_eq!(json_output(&output)["validation"], "passed");
+        assert_eq!(json_output(&output)["data"]["validation"], "passed");
     }
 
     let show = invoke(
@@ -102,7 +99,10 @@ fn cli_creates_shows_tests_checks_and_shares_queries() {
         None,
     );
     assert_eq!(show.status.code(), Some(0));
-    assert_eq!(json_output(&show)["rule"]["code"]["language"], "wt-rule-1");
+    assert_eq!(
+        json_output(&show)["data"]["rule"]["code"]["language"],
+        "wt-rule-1"
+    );
 
     let test = invoke(
         root.path(),
@@ -111,7 +111,7 @@ fn cli_creates_shows_tests_checks_and_shares_queries() {
         None,
     );
     assert_eq!(test.status.code(), Some(0));
-    assert_eq!(json_output(&test)["rules"][0]["passed"], true);
+    assert_eq!(json_output(&test)["data"]["rules"][0]["passed"], true);
 
     let check = invoke(
         root.path(),
@@ -145,9 +145,16 @@ fn cli_creates_shows_tests_checks_and_shares_queries() {
     );
 }
 
+// Optimizer mode is deliberately varied across these runs to prove it does
+// not change the semantic finding set; strip the fields that legitimately
+// differ (stats and the effective policy, which echoes the chosen
+// optimizer) before comparing.
 fn semantic_check_result(value: &Value) -> Value {
     let mut result = value.clone();
-    result.as_object_mut().unwrap().remove("stats");
+    let object = result.as_object_mut().unwrap();
+    object.remove("stats");
+    object.remove("effective_policy");
+    object.remove("policy_digest");
     result
 }
 
@@ -317,7 +324,7 @@ fn malformed_and_invalid_json_invocations_are_single_json_documents() {
         Some("{\"schema_version\": 2,}"),
     );
     assert_eq!(malformed.status.code(), Some(2));
-    assert!(json_output(&malformed)["error"]
+    assert!(json_output(&malformed)["errors"][0]["error"]
         .as_str()
         .unwrap()
         .contains("strict JSON"));
@@ -350,7 +357,10 @@ fn update_requires_current_hash_and_preserves_explicit_test_removal_reason() {
         "{}",
         String::from_utf8_lossy(&created.stdout)
     );
-    let digest = json_output(&created)["digest"].as_str().unwrap().to_owned();
+    let digest = json_output(&created)["data"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
     let mut replacement: Value = serde_json::from_str(&initial).unwrap();
     replacement["title"] = json!("Updated retained rule");
@@ -371,7 +381,7 @@ fn update_requires_current_hash_and_preserves_explicit_test_removal_reason() {
         Some(&replacement),
     );
     assert_eq!(without_permission.status.code(), Some(2));
-    assert!(json_output(&without_permission)["error"]
+    assert!(json_output(&without_permission)["errors"][0]["error"]
         .as_str()
         .unwrap()
         .contains("test removal"));
@@ -400,7 +410,7 @@ fn update_requires_current_hash_and_preserves_explicit_test_removal_reason() {
         String::from_utf8_lossy(&updated.stdout)
     );
     let updated_value = json_output(&updated);
-    let new_digest = updated_value["digest"].as_str().unwrap();
+    let new_digest = updated_value["data"]["digest"].as_str().unwrap();
     assert_ne!(new_digest, digest);
 
     let stale = invoke(
@@ -418,7 +428,7 @@ fn update_requires_current_hash_and_preserves_explicit_test_removal_reason() {
         Some(&initial),
     );
     assert_eq!(stale.status.code(), Some(2));
-    assert!(json_output(&stale)["error"]
+    assert!(json_output(&stale)["errors"][0]["error"]
         .as_str()
         .unwrap()
         .contains("stale update hash"));
@@ -461,7 +471,13 @@ fn global_and_local_same_ids_are_both_visible_and_short_ids_are_ambiguous() {
         None,
     );
     assert_eq!(list.status.code(), Some(0));
-    assert_eq!(json_output(&list)["rules"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        json_output(&list)["data"]["rules"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 
     let ambiguous = invoke(
         root.path(),
@@ -470,7 +486,7 @@ fn global_and_local_same_ids_are_both_visible_and_short_ids_are_ambiguous() {
         None,
     );
     assert_eq!(ambiguous.status.code(), Some(2));
-    assert!(json_output(&ambiguous)["error"]
+    assert!(json_output(&ambiguous)["errors"][0]["error"]
         .as_str()
         .unwrap()
         .contains("ambiguous"));
@@ -559,8 +575,8 @@ fn plan_compiles_rules_without_reading_application_sources() {
         String::from_utf8_lossy(&plan.stdout)
     );
     let result = json_output(&plan);
-    assert_eq!(result["executed"], false);
-    assert_eq!(result["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(result["data"]["executed"], false);
+    assert_eq!(result["data"]["rules"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -574,7 +590,6 @@ fn schema_command_prints_the_bundled_schema_verbatim() {
         ("config", "config.schema.json"),
         ("result", "result.schema.json"),
         ("plan", "plan.schema.json"),
-        ("waivers", "waivers.schema.json"),
     ] {
         let expected = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -585,27 +600,14 @@ fn schema_command_prints_the_bundled_schema_verbatim() {
         let output = invoke(
             root.path(),
             global.path(),
-            &[
-                "schema",
-                name,
-                "--schema-version",
-                if name == "review" {
-                    "1"
-                } else if name == "config" {
-                    "3"
-                } else {
-                    "2"
-                },
-                "--format",
-                "json",
-            ],
+            &["schema", name, "--format", "json"],
             None,
         );
         assert_eq!(output.status.code(), Some(0), "schema {name}");
         if matches!(name, "rule" | "submission") {
             let projected = json_output(&output);
-            assert_eq!(projected["properties"]["schema_version"]["const"], 2);
-            assert!(projected["properties"].get("documentation").is_none());
+            let expected_value: Value = serde_json::from_str(&expected).unwrap();
+            assert_eq!(projected, expected_value, "schema {name}");
             continue;
         }
         assert_eq!(
@@ -671,7 +673,7 @@ fn decimal_reference_submission_validates_and_runs_all_retained_fixture_vectors(
         "{}",
         String::from_utf8_lossy(&tested.stdout)
     );
-    assert_eq!(json_output(&tested)["rules"][0]["passed"], true);
+    assert_eq!(json_output(&tested)["data"]["rules"][0]["passed"], true);
 }
 
 #[test]
@@ -694,7 +696,7 @@ fn minimal_submission_lifecycle_reports_untested_then_checks_successfully() {
         "{}",
         String::from_utf8_lossy(&created.stdout)
     );
-    assert_eq!(json_output(&created)["tests"], "untested");
+    assert_eq!(json_output(&created)["data"]["tests"], "untested");
 
     let tested = invoke(
         root.path(),
@@ -725,4 +727,47 @@ fn minimal_submission_lifecycle_reports_untested_then_checks_successfully() {
             .len(),
         1
     );
+}
+
+#[test]
+fn stats_reports_a_dead_rule_in_text_and_json() {
+    let root = tempdir().unwrap();
+    let global = tempdir().unwrap();
+    std::fs::write(root.path().join("source.txt"), "request(\"other\")\n").unwrap();
+    let created = invoke(
+        root.path(),
+        global.path(),
+        &["new", "--stdin", "--format", "json"],
+        Some(&submission("stats-example", "foo", "contains-foo")),
+    );
+    assert_eq!(created.status.code(), Some(0), "{created:?}");
+
+    let json = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache", "--format", "json"],
+        None,
+    );
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    let result = json_output(&json);
+    assert_eq!(result["command"], "stats");
+    assert_eq!(result["data"]["complete"], true);
+    let rules = result["data"]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["id"], "local/stats-example");
+    assert_eq!(rules[0]["signal"], "dead");
+    assert_eq!(rules[0]["raw_findings"], 0);
+    assert_eq!(result["data"]["signals"]["dead"], 1);
+
+    let text = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache"],
+        None,
+    );
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(rendered.contains("DEAD"));
+    assert!(rendered.contains("local/stats-example"));
+    assert!(rendered.contains("analysis complete"));
 }

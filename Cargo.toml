@@ -3,15 +3,20 @@ members = ["crates/wt-runtime", "crates/wt-core", "crates/wt-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "MIT"
+# Not published to crates.io; installed via `cargo install --path` or the
+# prebuilt release archives. Lets the workspace's internal path dependencies
+# (wt-cli -> wt-core -> wt-runtime) stay unversioned without tripping
+# cargo-deny's wildcard-dependency check.
+publish = false
 
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-regex = "=1.12.2"
+regex = "=1.12.4"
 globset = "0.4"
 tempfile = "3"

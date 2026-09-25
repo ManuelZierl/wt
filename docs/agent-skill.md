@@ -1,6 +1,6 @@
 # Install the WT agent skill
 
-The loadable skill is [`skills/wt/SKILL.md`](../skills/wt/SKILL.md). Its directory also contains a self-contained sample submission and a WRL1 reference. Copy the **whole `wt` directory**, so those relative references remain available.
+The loadable skill is [`skills/wt/SKILL.md`](../skills/wt/SKILL.md). Its directory also contains two self-contained sample submissions (`text.v1` and `ast.v1`) and a WRL1 reference. Copy the **whole `wt` directory**, so those relative references remain available.
 
 The skill works in repositories that do not contain WT's sources. It uses the installed `wt` or `watchtower` executable, its help, and its schemas. WT requires no model provider, daemon, or network service.
 
@@ -38,13 +38,13 @@ Agents with file-reading support can also read `skills/wt/SKILL.md` directly. Di
 
 ## Included workflow
 
-The skill covers inspection, narrow documented detectors, strict JSON submission,
-retained regression examples, validation, creation, fixtures, plan inspection,
-full and partial checks, digest-protected updates, advisory/enforced modes,
-waivers, and trusted CI boundaries. Its sample submission is exercised by the
-CLI acceptance tests.
+The skill covers inspection, narrow documented detectors (`text.v1` and structural
+`ast.v1`), strict JSON submission, retained regression examples, validation, creation,
+fixtures, plan inspection, full and partial checks, digest-protected updates,
+advisory/enforced modes, and trusted CI boundaries. Its sample submissions are
+exercised by the CLI acceptance tests and by `tests/docs.sh`.
 
-When enforcing policy, protect the checker version, `.wt/` policy, waivers,
+When enforcing policy, protect the checker version, `.wt/` policy,
 ignore settings, and final CI invocation through a trusted review boundary.
 A completed WT scan means the selected detectors finished on their eligible
 inputs; it does not prove application correctness.

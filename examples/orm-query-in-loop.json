@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "id": "orm-query-in-loop",
+  "title": "ORM query call inside a for loop",
+  "documentation": {
+    "source": "# ORM query call inside a for loop\n\n## Description\n\nFlags an ORM call of the shape `<expr>.objects.<method>(...)` found anywhere in the body of a\n`for` loop, a common shape for a Django-style N+1 query: the query runs once per iteration\ninstead of once for the whole collection.\n\n## Rationale\n\nA query issued inside a loop scales with the size of whatever is being iterated, which is\nusually the exact thing the loop is iterating and therefore easy to miss in review. This is a\n`review` finding, not an automatic violation: some loop-body queries are already bounded,\ncached, or intentionally per-item, so a human should confirm before treating it as a bug.\n\n## Limitations\n\n- Matches the `.objects.<method>(...)` call shape structurally (via `ast.v1`), so it is\n  insensitive to formatting and does not fire on the same text inside a string or a comment,\n  but it also does not know whether `.objects` is really a Django manager: a coincidentally\n  named attribute would also match.\n- Only looks at direct `for ... in ...:` loops; a query reached through a helper function\n  called from the loop body is not seen.\n- Does not distinguish a query outside the loop (not flagged) from one inside it (flagged);\n  that scoping is exactly what `m.node(\"BODY\").ast_match(...)` (searching only within the\n  captured loop body) is for.\n"
+  },
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {
+    "include": [
+      "**/*.py"
+    ]
+  },
+  "diagnostics": {
+    "possible-n-plus-one": {
+      "kind": "review",
+      "message": "An ORM query (`.objects.<method>(...)`) runs on every iteration of this loop, a possible N+1 query.",
+      "help": "Prefetch the related rows before the loop (e.g. select_related/prefetch_related), or confirm this call is already cheap (cached, batched, or bounded)."
+    }
+  },
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": [
+      "ast.v1"
+    ],
+    "source": "for m in file.ast_match(\"python\", \"for $X in $ITER:\\n    $$$BODY\") {\n    for q in m.node(\"BODY\").ast_match(\"python\", \"$QS.objects.$METHOD($$$)\") {\n        emit(q.span, \"possible-n-plus-one\");\n    }\n}\n"
+  },
+  "tests": {
+    "schema_version": 1,
+    "cases": [
+      {
+        "name": "query-inside-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def process(request):\n    users = User.objects.all()\n    for user in users:\n        profile = Profile.objects.filter(owner=user)\n        send(profile)\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "app/views.py",
+            "code": "possible-n-plus-one",
+            "kind": "review"
+          }
+        ]
+      },
+      {
+        "name": "query-outside-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def process(request):\n    users = User.objects.all()\n    for user in users:\n        send(user)\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "text-in-string-and-comment",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def process(users):\n    for user in users:\n        # Profile.objects.filter(user=user) would be an N+1 query\n        note = \"Profile.objects.filter(user=user)\"\n        send(user, note)\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "unrelated-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def process(users):\n    for user in users:\n        log(user)\n        send(user)\n"
+          }
+        ],
+        "expect": []
+      }
+    ]
+  },
+  "metadata": {
+    "source": "Synthetic Django-style N+1 query example demonstrating ast.v1 structural matching."
+  }
+}

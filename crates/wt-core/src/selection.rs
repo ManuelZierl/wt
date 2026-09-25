@@ -962,12 +962,13 @@ mod tests {
 
     fn package(id: &str, execution: &str, include: &str) -> RulePackage {
         let manifest = Manifest {
-            documentation: None,
-            schema_version: 2,
+            documentation: crate::rule::Documentation {
+                file: Some("rule.md".to_owned()),
+                source: None,
+            },
+            schema_version: crate::CONTRACT_VERSION,
             id: id.to_owned(),
             title: id.to_owned(),
-            description: "test".to_owned(),
-            rationale: "test".to_owned(),
             mode: "advisory".to_owned(),
             severity: "warning".to_owned(),
             execution: execution.to_owned(),
@@ -978,7 +979,6 @@ mod tests {
             },
             patterns: BTreeMap::new(),
             diagnostics: BTreeMap::new(),
-            limitations: Vec::new(),
             code: Code {
                 language: "wt-rule-1".to_owned(),
                 capabilities: Vec::new(),

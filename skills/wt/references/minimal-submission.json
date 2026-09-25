@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "id": "no-todo-marker",
   "title": "No TODO marker in text files",
   "mode": "enforced",
@@ -25,7 +25,7 @@
     "source": "if file.text.contains(\"TODO\") { emit(file.span, \"todo-marker\"); }"
   },
   "tests": {
-    "schema_version": 2,
+    "schema_version": 1,
     "cases": [
       {
         "name": "reports-marker",

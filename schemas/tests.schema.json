@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "cases"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 1},
     "cases": {"type": "array", "items": {"$ref": "#/$defs/case"}}
   },
   "$defs": {

@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "id": "review-legacy-endpoint",
   "title": "Review legacy endpoint references",
   "mode": "advisory",
@@ -19,11 +19,11 @@
   },
   "code": {
     "language": "wt-rule-1",
-    "capabilities": ["regex.v1"],
+    "capabilities": ["text.v1"],
     "source": "for matched in rx::find_all(file, \"legacy_endpoint\") { emit(matched.span, \"legacy-endpoint\"); }"
   },
   "tests": {
-    "schema_version": 2,
+    "schema_version": 1,
     "cases": [
       {"name": "raw-positive-acceptable-note", "files": [{"path": "src/compat.txt", "content": "A compatibility note retains /v1/legacy."}], "expect": [{"path": "src/compat.txt", "code": "legacy-endpoint", "kind": "review"}]},
       {"name": "raw-negative-other-endpoint", "files": [{"path": "src/compat.txt", "content": "A note about /v2/current."}], "expect": []}

@@ -8,9 +8,9 @@ The CLI is a thin Clap adapter around `wt_core::dispatch(command, options)`. It 
 
 ## Output
 
-`--format json` writes exactly one JSON document to stdout. Argument errors are also JSON when the format flag is recognizable before Clap finishes parsing. Progress and diagnostics are not mixed into JSON stdout. Text check output gives each finding a `BLOCKING` or `ADVISORY` label, message, help, and a summary. Result protocol 3 is the default: check uses top-level findings and counts; other commands put their payload in `data`. `--detail full` on check includes accepted and waived findings and file/review inventory. `--output-version 2` requests the older full check projection and fails when coverage policy or a candidate preview would be lost.
+`--format json` writes exactly one JSON document to stdout. Argument errors are also JSON when the format flag is recognizable before Clap finishes parsing. Progress and diagnostics are not mixed into JSON stdout. Text check output gives each finding a `BLOCKING` or `ADVISORY` label, message, help, and a summary. Check uses top-level findings and counts; other commands put their payload in `data`. `--detail full` on check includes accepted and waived findings and file/review inventory.
 
-`wt schema rule|submission|tests|config|result|plan|waivers|review|capabilities` prints the installed schema; rule/submission schemas are deterministic version-pinned projections of bundled definitions. `--schema-version 2` selects older rule/submission/config/result variants. `wt capabilities --format json` is a standalone capability document. Neither reads the repository or global configuration.
+`wt schema rule|submission|tests|config|result|plan|review|capabilities` prints the installed schema. `wt capabilities --format json` is a standalone capability document. Neither reads the repository or global configuration.
 
 Exit codes are `0` for a completed non-blocking result, `1` for blocking findings or failed fixture expectations, `2` for invalid invocation/configuration/incomplete analysis, and `130` for a controlled interruption.
 
@@ -22,14 +22,14 @@ files: an empty file can still be held by another process.
 
 ## Supported Command Mapping
 
-The command list follows `watchtower-spec-v3.md` section 9.1: `init`, `capabilities`, `guide`, `new`, `check`, `plan`, `list`, `show`, `validate`, `test`, `update`, `review`, `reviews`, `inspect`, `fmt`, `set-mode`, `explain`, `config`, `schema`, and `cache clear`. Command-specific options are rejected by Clap or by the core option validator rather than ignored.
+The command list follows [`docs/spec.md`](spec.md) section 8.1: `init`, `capabilities`, `guide`, `new`, `check`, `plan`, `stats`, `list`, `show`, `validate`, `test`, `update`, `review`, `reviews`, `inspect`, `fmt`, `set-mode`, `explain`, `config`, `schema`, and `cache clear`. Command-specific options are rejected by Clap or by the core option validator rather than ignored.
 
-The CLI forwards explicit `--jobs 1..=3`; when omitted, the core chooses `min(available CPUs, admitted workers)`. Configuration schema 3 supports bounded file/repository execution limits, worker/parent/total memory reservations, and `optimizer.mode`; see [runtime configuration](runtime-configuration.md). `--optimizer off` is the semantic reference path; explicit `--optimizer auto` overrides a configured `off`. `--no-cache` disables persistent raw-result caching while retaining in-run execution semantics. `--changed` narrows file-local work but keeps repository-rule dependencies in full scope.
+The CLI forwards explicit `--jobs 1..=3`; when omitted, the core chooses `min(available CPUs, admitted workers)`. Configuration supports bounded file/repository execution limits, worker/parent/total memory reservations, and `optimizer.mode`; see [runtime configuration](runtime-configuration.md). `--optimizer off` is the semantic reference path; explicit `--optimizer auto` overrides a configured `off`. `--no-cache` disables persistent raw-result caching while retaining in-run execution semantics. `--changed` narrows file-local work but keeps repository-rule dependencies in full scope.
 
 ## Readable authoring and occurrence review
 
 `wt fmt [ID] [--check] [--global]` formats local programs by default. `new` and
-`update` format automatically and store schema-3 Markdown-backed packages.
+`update` format automatically and store Markdown-backed packages.
 `wt review ID --decision ... --expect-evidence HASH --reason-file PATH` records an
 explicit decision; replacement requires `--expect-hash`. `wt reviews` inspects
 retained rationale and history metadata. `wt schema review` exposes review records.
@@ -38,7 +38,7 @@ rationale and categorized evidence changes. `wt check --submission PATH` runs
 one self-contained candidate with `candidate/<id>` identity, without installing
 it or applying existing decisions. `wt update ... --preview` validates, formats,
 and tests a candidate without changing the active package. `wt config --format
-json` includes configured and effective settings; schema-3 coverage expectations
+json` includes configured and effective settings; coverage expectations
 are evaluated separately from the finding count.
 See [the complete contract](readable-rules-and-reviews.md) for evidence boundaries,
-staleness, extra watched files, legacy migration, and enforcement semantics.
+staleness, extra watched files, and enforcement semantics.

@@ -1,9 +1,10 @@
 {
-  "schema_version": 2,
+  "schema_version": 1,
   "id": "shared-request-foo",
   "title": "Request calls containing foo",
-  "description": "Reports request call regions that contain the foo marker.",
-  "rationale": "This example demonstrates independent predicates over a shared regex query.",
+  "documentation": {
+    "source": "# Request calls containing foo\n\n## Description\n\nReports request call regions that contain the foo marker.\n\n## Rationale\n\nThis example demonstrates independent predicates over a shared regex query.\n\n## Limitations\n\n- This example only inspects text files and does not interpret request arguments.\n"
+  },
   "mode": "advisory",
   "severity": "warning",
   "execution": "file",
@@ -16,14 +17,13 @@
       "help": "Review the request marker and use the documented form."
     }
   },
-  "limitations": ["This example only inspects text files and does not interpret request arguments."],
   "code": {
     "language": "wt-rule-1",
-    "capabilities": ["regex.v1", "text.v1"],
+    "capabilities": ["text.v1"],
     "source": "for matched in rx::find_all(file, \"request\") { if matched.text.contains(\"foo\") { emit(matched.span, \"contains-foo\"); } }"
   },
   "tests": {
-    "schema_version": 2,
+    "schema_version": 1,
     "cases": [
       {
         "name": "reports-marker",

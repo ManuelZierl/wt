@@ -4,17 +4,28 @@
   "title": "Watchtower static plan result",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "command", "status", "exit_code", "rules", "queries", "plan_digest", "optimizer", "executed"],
+  "required": ["schema_version", "command", "status", "exit_code", "detail", "data", "stages", "errors", "notices"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 1},
     "command": {"const": "plan"},
     "status": {"const": "pass"},
     "exit_code": {"const": 0},
-    "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
-    "queries": {"type": "array", "items": {"$ref": "#/$defs/shared-query"}},
-    "plan_digest": {"$ref": "#/$defs/digest"},
-    "optimizer": {"enum": ["auto", "off"]},
-    "executed": {"const": false}
+    "detail": {"enum": ["summary", "full"]},
+    "stages": {"type": "array"},
+    "errors": {"type": "array"},
+    "notices": {"type": "array"},
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "queries", "plan_digest", "optimizer", "executed"],
+      "properties": {
+        "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+        "queries": {"type": "array", "items": {"$ref": "#/$defs/shared-query"}},
+        "plan_digest": {"$ref": "#/$defs/digest"},
+        "optimizer": {"enum": ["auto", "off"]},
+        "executed": {"const": false}
+      }
+    }
   },
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},

@@ -1,379 +1,51 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://watchtower.local/schemas/result.schema.json",
-  "title": "Watchtower command result",
-  "oneOf": [{"$ref": "#/$defs/command-error"}, {"$ref": "#/$defs/check-result"}, {"$ref": "#/$defs/plan-result"}, {"$ref": "#/$defs/command-result"}],
+  "title": "Watchtower result protocol",
+  "oneOf": [{"$ref": "#/$defs/check"}, {"$ref": "#/$defs/command"}],
   "$defs": {
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "command-error": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema_version", "command", "status", "exit_code", "error"],
+    "finding": {
+      "type": "object", "required": ["rule_id", "finding_id", "evidence_digest", "path", "start_byte", "end_byte", "kind", "mode", "severity", "blocking", "message", "help"],
       "properties": {
-        "schema_version": {"const": 2},
-        "command": {"type": "string"},
-        "status": {"const": "error"},
-        "exit_code": {"const": 2},
-        "error": {"type": "string", "minLength": 1}
+        "rule_id": {"type": "string"}, "finding_id": {"type": "string"},
+        "evidence_digest": {"type": "string"}, "path": {"type": "string"},
+        "start_byte": {"type": "integer", "minimum": 0}, "end_byte": {"type": "integer", "minimum": 0},
+        "kind": {"enum": ["review", "violation"]}, "mode": {"enum": ["advisory", "enforced", "disabled"]},
+        "severity": {"enum": ["error", "warning", "info"]}, "blocking": {"type": "boolean"},
+        "message": {"type": "string"}, "help": {"type": "string"}
       }
     },
-    "coverage": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["path", "status"],
+    "check": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "command", "status", "exit_code", "detail", "complete", "scope", "root", "policy_digest", "effective_policy", "coordinate_encoding", "diagnostics", "errors", "notices", "rules", "summary", "gaps", "coverage_expectations", "inventory"],
       "properties": {
-        "path": {"type": "string"},
-        "status": {"enum": ["checked", "excluded", "ignored", "binary", "gap"]},
-        "digest": {"$ref": "#/$defs/digest"},
-        "reason": {"type": "string"},
-        "origin": {"type": "string"}
-      }
-    },
-    "diagnostic": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "rule_id",
-        "rule_digest",
-        "code",
-        "kind",
-        "severity",
-        "mode",
-        "blocking",
-        "path",
-        "file_digest",
-        "start_byte",
-        "end_byte",
-        "start_line",
-        "start_column",
-        "end_line",
-        "end_column",
-        "message",
-        "help"
-      ],
-      "properties": {
-        "rule_id": {"type": "string"},
-        "rule_digest": {"$ref": "#/$defs/digest"},
-        "code": {"type": "string"},
-        "kind": {"enum": ["violation", "review"]},
-        "severity": {"enum": ["error", "warning", "info"]},
-        "mode": {"enum": ["advisory", "enforced", "disabled"]},
-        "blocking": {"type": "boolean"},
-        "path": {"type": "string"},
-        "file_digest": {"$ref": "#/$defs/digest"},
-        "start_byte": {"type": "integer", "minimum": 0},
-        "end_byte": {"type": "integer", "minimum": 0},
-        "start_line": {"type": "integer", "minimum": 1},
-        "start_column": {"type": "integer", "minimum": 1},
-        "end_line": {"type": "integer", "minimum": 1},
-        "end_column": {"type": "integer", "minimum": 1},
-        "message": {"type": "string"},
-        "help": {"type": "string"},
-        "waiver_id": {"type": "string"},
-        "finding_id": {"$ref": "#/$defs/digest"},
-        "evidence_digest": {"$ref": "#/$defs/digest"},
-        "matched_digest": {"$ref": "#/$defs/digest"},
-        "review_state": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["decision", "validity"],
-          "properties": {
-            "decision": {"enum": ["needs_review", "acceptable", "confirmed_issue", "accepted_risk"]},
-            "validity": {"enum": ["unreviewed", "current", "stale"]},
-            "record_digest": {"$ref": "#/$defs/digest"},
-            "revision": {"type": "integer", "minimum": 1},
-            "reasons": {"type": "array", "items": {"type": "string"}}
-          }
-        },
-        "context_digest": {"$ref": "#/$defs/digest"},
-        "engine_digest": {"$ref": "#/$defs/digest"}
-      }
-    },
-    "check-result": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema_version",
-        "command",
-        "status",
-        "exit_code",
-        "complete",
-        "root",
-        "scope",
-        "policy_digest",
-        "effective_policy",
-        "coordinate_encoding",
-        "diagnostics",
-        "suppressed",
-        "notices",
-        "errors",
-        "rules",
-        "files",
-        "summary",
-        "gaps"
-      ],
-      "properties": {
-        "schema_version": {"const": 2},
-        "command": {"const": "check"},
-        "status": {"enum": ["pass", "findings", "incomplete", "no_work"]},
-        "exit_code": {"enum": [0, 1, 2]},
-        "complete": {"type": "boolean"},
-        "root": {"type": "string"},
-        "scope": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["partial", "include_ignored", "host_ignores"],
-          "properties": {"partial": {"type": "boolean"}, "include_ignored": {"type": "boolean"}, "host_ignores": {"type": "boolean"}}
-        },
-        "changed_base": {"type": ["string", "null"]},
-        "policy_digest": {"$ref": "#/$defs/digest"},
-        "effective_policy": {"$ref": "#/$defs/effective-policy"},
+        "schema_version": {"const": 1}, "command": {"const": "check"}, "status": {"type": "string"},
+        "exit_code": {"enum": [0,1,2,130]}, "detail": {"enum": ["summary", "full"]},
+        "complete": {"type": "boolean"}, "root": {"type": "string"},
+        "preview": {"type": "boolean"},
+        "scope": {"type": "object"}, "changed_base": {"type": ["string", "null"]},
+        "policy_digest": {"type": "string"}, "effective_policy": {"type": "object"},
         "coordinate_encoding": {"const": "unicode-scalar-columns"},
-        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
-        "suppressed": {
-          "type": "array",
-          "items": {"allOf": [{"$ref": "#/$defs/diagnostic"}, {"type": "object", "required": ["waiver_id"], "properties": {"waiver_id": {"type": "string"}}}]}
-        },
-        "notices": {"type": "array", "items": {"type": "string"}},
-        "errors": {"type": "array", "items": {"$ref": "#/$defs/check-error"}},
-        "rules": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "digest", "mode", "status"],
-            "properties": {
-              "id": {"type": "string"},
-              "digest": {"$ref": "#/$defs/digest"},
-              "mode": {"enum": ["advisory", "enforced", "disabled"]},
-              "status": {"type": "string"},
-              "checked_files": {"type": "integer", "minimum": 0}
-            }
-          }
-        },
-        "files": {"type": "array", "items": {"$ref": "#/$defs/coverage"}},
-        "gaps": {"type": "array", "items": {"$ref": "#/$defs/coverage"}},
-        "summary": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["checked_files", "blocking_diagnostics", "advisory_diagnostics", "review_diagnostics", "binary_skips", "analysis_gaps"],
-          "properties": {
-            "checked_files": {"type": "integer", "minimum": 0},
-            "blocking_diagnostics": {"type": "integer", "minimum": 0},
-            "advisory_diagnostics": {"type": "integer", "minimum": 0},
-            "review_diagnostics": {"type": "integer", "minimum": 0},
-            "binary_skips": {"type": "integer", "minimum": 0},
-            "analysis_gaps": {"type": "integer", "minimum": 0},
-            "raw_findings": {"type": "integer", "minimum": 0},
-            "reviewed_findings": {"type": "integer", "minimum": 0},
-            "actionable_findings": {"type": "integer", "minimum": 0}
-          }
-        },
-        "stats": {"$ref": "#/$defs/stats-envelope"},
-        "reviewed": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
-        "review_records": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["finding_id", "decision", "validity", "record_digest", "revision"],
-            "properties": {
-              "finding_id": {"$ref": "#/$defs/digest"},
-              "record_digest": {"$ref": "#/$defs/digest"},
-              "decision": {"enum": ["needs_review", "acceptable", "confirmed_issue", "accepted_risk"]},
-              "validity": {"enum": ["current", "stale", "not_observed", "waived"]},
-              "revision": {"type": "integer", "minimum": 1}
-            }
-          }
-        }
-      }
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+        "reviewed": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+        "files": {"type": "array"}, "review_records": {"type": "array"},
+        "errors": {"type": "array"}, "notices": {"type": "array"},
+        "rules": {"type": "array"}, "gaps": {"type": "array"},
+        "coverage_expectations": {"type": "array"},
+        "summary": {"type": "object", "required": ["raw_occurrences", "actionable_occurrences", "reviewed_occurrences", "blocking_diagnostics", "checked_files"]},
+        "inventory": {"type": "object", "additionalProperties": false, "required": ["reviewed", "files", "review_records"], "properties": {"reviewed": {"type": "boolean"}, "files": {"type": "boolean"}, "review_records": {"type": "boolean"}}},
+        "stats": {"type": "object"}
+      },
+      "allOf": [{"if": {"properties": {"detail": {"const": "full"}}}, "then": {"required": ["reviewed", "files", "review_records"]}, "else": {"not": {"anyOf": [{"required": ["reviewed"]}, {"required": ["files"]}, {"required": ["review_records"]}]}}}]
     },
-    "stats-envelope": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["runtime", "cache"],
-      "properties": {"runtime": {"$ref": "#/$defs/runtime-stats"}, "cache": {"$ref": "#/$defs/cache-stats"}}
-    },
-    "runtime-stats": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {"^(regex_evaluations|text_evaluations|cache_key_bytes_hashed)$": {"type": "integer", "minimum": 0}},
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "command", "status", "exit_code", "detail", "data", "stages", "errors", "notices"],
       "properties": {
-        "optimized": {"type": "boolean"},
-        "snapshot_reads": {"type": "integer", "minimum": 0},
-        "snapshot_bytes": {"type": "integer", "minimum": 0},
-        "logical_query_requests": {"type": "integer", "minimum": 0},
-        "physical_query_evaluations": {"type": "integer", "minimum": 0},
-        "shared_result_hits": {"type": "integer", "minimum": 0},
-        "parser_evaluations": {"type": "integer", "minimum": 0},
-        "logical_steps": {"type": "integer", "minimum": 0},
-        "native_bytes": {"type": "integer", "minimum": 0},
-        "temporary_bytes": {"type": "integer", "minimum": 0},
-        "retained_memory_bytes": {"type": "integer", "minimum": 0},
-        "residual_invocations": {"type": "integer", "minimum": 0},
-        "source_reads": {"type": "integer", "minimum": 0},
-        "bytes_hashed": {"type": "integer", "minimum": 0},
-        "relevant_rule_file_pairs": {"type": "integer", "minimum": 0}
-      }
-    },
-    "effective-policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema_version", "scan", "mode_overrides", "origins"],
-      "properties": {
-        "schema_version": {"const": 2},
-        "scan": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["respect_gitignore", "honor_git_local_excludes", "include_hidden", "max_file_bytes", "exclude"],
-          "properties": {
-            "respect_gitignore": {"type": "boolean"},
-            "honor_git_local_excludes": {"type": "boolean"},
-            "include_hidden": {"type": "boolean"},
-            "max_file_bytes": {"type": "integer", "minimum": 1},
-            "exclude": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["glob", "reason"],
-                "properties": {"glob": {"type": "string"}, "reason": {"type": "string"}}
-              }
-            }
-          }
-        },
-        "mode_overrides": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["mode", "reason"],
-            "properties": {"mode": {"enum": ["advisory", "enforced", "disabled"]}, "reason": {"type": "string"}}
-          }
-        },
-        "origins": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["key", "origin"],
-            "properties": {"key": {"type": "string"}, "origin": {"type": "string"}}
-          }
-        },
-        "inactive_overrides": {"type": "array", "items": {"type": "string"}}
-      }
-    },
-    "check-error": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["error"],
-      "properties": {
-        "rule_id": {"type": "string"},
-        "path": {"type": "string"},
-        "error": {"type": "string"},
-        "cases": {"type": "array", "items": {"type": "string"}},
-        "waivers": {"type": "array", "items": {"type": "string"}},
-        "help": {"type": "string"}
-      }
-    },
-    "cache-stats": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["enabled", "raw_hits", "raw_misses", "raw_writes", "fixture_hits", "fixture_misses", "fixture_writes"],
-      "properties": {
-        "enabled": {"type": "boolean"},
-        "raw_hits": {"type": "integer", "minimum": 0},
-        "raw_misses": {"type": "integer", "minimum": 0},
-        "raw_writes": {"type": "integer", "minimum": 0},
-        "fixture_hits": {"type": "integer", "minimum": 0},
-        "fixture_misses": {"type": "integer", "minimum": 0},
-        "fixture_writes": {"type": "integer", "minimum": 0}
-      }
-    },
-    "plan-result": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema_version", "command", "status", "exit_code", "rules", "queries", "plan_digest", "optimizer", "executed"],
-      "properties": {
-        "schema_version": {"const": 2},
-        "command": {"const": "plan"},
-        "status": {"const": "pass"},
-        "exit_code": {"const": 0},
-        "optimizer": {"enum": ["auto", "off"]},
-        "executed": {"const": false},
-        "plan_digest": {"$ref": "#/$defs/digest"},
-        "rules": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["id", "digest", "scope", "plan"],
-            "properties": {"id": {"type": "string"}, "digest": {"$ref": "#/$defs/digest"}, "scope": {"type": "object"}, "plan": {"type": "object"}}
-          }
-        },
-        "queries": {"type": "array", "items": {"type": "object"}}
-      }
-    },
-    "command-result": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema_version", "command", "status", "exit_code"],
-      "properties": {
-        "schema_version": {"const": 2},
-        "command": {
-          "enum": [
-            "init",
-            "new",
-            "update",
-            "list",
-            "show",
-            "validate",
-            "test",
-            "set-mode",
-            "explain",
-            "config",
-            "schema",
-            "cache-clear",
-            "fmt",
-            "review",
-            "reviews"
-          ]
-        },
-        "status": {"enum": ["pass", "findings", "incomplete"]},
-        "exit_code": {"enum": [0, 1, 2, 130]},
-        "error": {"type": "string"},
-        "path": {"type": "string"},
-        "scope": {"type": "string"},
-        "qualified_id": {"type": "string"},
-        "id": {"type": "string"},
-        "mode": {"enum": ["advisory", "enforced", "disabled"]},
-        "reason": {"type": "string"},
-        "digest": {"$ref": "#/$defs/digest"},
-        "validation": {"const": "passed"},
-        "tests": {"enum": ["passed", "untested"]},
-        "valid": {"type": "boolean"},
-        "cleared": {"type": "boolean"},
-        "rule": {"type": "object"},
-        "rules": {"type": "array"},
-        "scan": {"type": "object"},
-        "mode_overrides": {"type": "object"},
-        "origins": {"type": "array"},
-        "selection": {"type": "array"},
-        "gaps": {"type": "array"},
-        "plan": {"type": "object"},
-        "optimizer": {"enum": ["auto", "off"]},
-        "executed": {"type": "boolean"},
-        "$schema": {"type": "string"},
-        "type": {"type": "string"},
-        "required": {"type": "array"},
-        "properties": {"type": "object"},
-        "changed": {"type": "array", "items": {"type": "string"}},
-        "check_only": {"type": "boolean"},
-        "finding_id": {"$ref": "#/$defs/digest"},
-        "record_digest": {"$ref": "#/$defs/digest"},
-        "revision": {"type": "integer", "minimum": 1},
-        "decision": {"enum": ["needs_review", "acceptable", "confirmed_issue", "accepted_risk"]},
-        "reviews": {"type": "array", "items": {"type": "object"}}
+        "schema_version": {"const": 1}, "command": {"type": "string"},
+        "status": {"type": "string"}, "exit_code": {"enum": [0,1,2,130]},
+        "detail": {"enum": ["summary", "full"]}, "data": {"type": "object"},
+        "stages": {"type": "array"}, "errors": {"type": "array"}, "notices": {"type": "array"}
       }
     }
   }

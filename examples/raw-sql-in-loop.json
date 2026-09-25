@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "id": "raw-sql-in-loop",
+  "title": "Raw SQL string inside a for loop",
+  "documentation": {
+    "source": "# Raw SQL string inside a for loop\n\n## Description\n\nCombines both structural matching capabilities: `ast.v1` finds every `for` loop and gives the\nexact byte span of its body, and `text.v1`'s `rx::find_in` then regex-searches only inside that\nspan for a raw `SELECT ... FROM` string. A query text found anywhere else in the file (outside\nany loop body) is not reported.\n\n## Rationale\n\nA raw SQL query built and executed on every iteration of a loop has the same per-item query\ncost problem as `orm-query-in-loop`, but as free-form SQL text a purely structural pattern\ncannot recognize it; a regex is the right tool for that part. `ast.v1` supplies what regex\ncannot: a precise, syntax-aware boundary for \"inside this loop\" to search within, so the regex\nnever has to approximate that boundary with line counting or indentation guessing.\n\n## Limitations\n\n- Only looks at direct `for ... in ...:` loops, and only their immediate body span (a query\n  built inside a nested `if` or a call from the loop body is still inside that span and is\n  found; one reached only through a helper function defined elsewhere is not).\n- `raw_sql`'s regex is deliberately narrow (`SELECT ... FROM`) so it does not fire on unrelated\n  text; broaden it if your SQL style differs, but a broader pattern also risks matching the\n  same text inside a string or comment that only *mentions* a query.\n"
+  },
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {
+    "include": [
+      "app/views.py",
+      "app/tasks.py"
+    ]
+  },
+  "patterns": {
+    "raw_sql": "SELECT\\s.*\\bFROM\\b"
+  },
+  "diagnostics": {
+    "raw-sql-in-loop": {
+      "kind": "review",
+      "message": "A raw SQL SELECT is issued from inside this loop's body, once per iteration.",
+      "help": "Move the query above the loop and iterate over its result, or confirm this per-iteration query is intentional."
+    }
+  },
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": [
+      "ast.v1",
+      "text.v1"
+    ],
+    "source": "for m in file.ast_match(\"python\", \"for $X in $ITER:\\n    $$$BODY\") {\n    let body = m.node(\"BODY\");\n    if body == () {\n        continue;\n    }\n    for q in rx::find_in(body.span, \"raw_sql\") {\n        emit(q.span, \"raw-sql-in-loop\");\n    }\n}\n"
+  },
+  "tests": {
+    "schema_version": 1,
+    "cases": [
+      {
+        "name": "query-inside-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def sync_users(user_ids):\n    for user_id in user_ids:\n        cursor.execute(\"SELECT * FROM users WHERE id = %s\", [user_id])\n        row = cursor.fetchone()\n        process(row)\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "app/views.py",
+            "code": "raw-sql-in-loop",
+            "kind": "review"
+          }
+        ]
+      },
+      {
+        "name": "query-outside-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def sync_users(user_ids):\n    cursor.execute(\"SELECT * FROM users WHERE id IN %s\", [tuple(user_ids)])\n    rows = cursor.fetchall()\n    for row in rows:\n        process(row)\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "text-in-string-and-comment",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def sync_users(user_ids):\n    # SELECT * FROM users WHERE id = %s -- do not do this inside the loop\n    note = \"SELECT * FROM users WHERE id = %s\"\n    for user_id in user_ids:\n        log(note, user_id)\n"
+          }
+        ],
+        "expect": []
+      },
+      {
+        "name": "unrelated-loop",
+        "files": [
+          {
+            "path": "app/views.py",
+            "content": "def sync_users(user_ids):\n    for user_id in user_ids:\n        log(user_id)\n        notify(user_id)\n"
+          }
+        ],
+        "expect": []
+      }
+    ]
+  },
+  "metadata": {
+    "source": "Synthetic example combining ast.v1 loop-body scoping with a text.v1 regex search for raw SQL."
+  }
+}

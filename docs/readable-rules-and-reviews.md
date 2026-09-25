@@ -8,7 +8,7 @@ WT does not decide whether the underlying concern is a proven application bug.
 
 ## Readable packages
 
-New and updated packages use rule schema **3**:
+New and updated packages use rule schema **1**:
 
 ```text
 .wt/rules/my-rule/
@@ -20,19 +20,15 @@ New and updated packages use rule schema **3**:
 
 The disk manifest contains `"documentation": {"file": "rule.md"}`. A self-contained
 JSON submission/export instead contains `"documentation": {"source": "# ...\n"}`.
-There is no second authoritative description/rationale/limitations copy in schema
-3 JSON. Markdown is not executed, and headings have no hidden policy semantics.
+There is no second authoritative description/rationale/limitations copy. Markdown is not executed, and headings have no hidden policy semantics.
 Recommended sections are **Intended constraint**, **What is detected**, **How to
 review**, **Known limitations**, and **Evidence**. Record hypotheses as hypotheses;
 passing detector fixtures does not prove the motivating application defect.
 
-Legacy schema-2 packages remain readable. `new` and `update` convert legacy prose
-to Markdown without discarding it. `check`, `show` and `fmt` do not migrate packages
-or change policy. To migrate a legacy package explicitly, export it with `show`
-and submit its `rule` object to `update --expect-hash` using the returned `digest`.
-The updated package digest includes `rule.md`; raw detection cache keys exclude
-long-form prose. Contract/documentation edits conservatively invalidate existing
-review acceptances even when raw detection results are reusable.
+`check`, `show` and `fmt` do not change policy. The package digest includes
+`rule.md`; raw detection cache keys exclude long-form prose.
+Contract/documentation edits conservatively invalidate existing review
+acceptances even when raw detection results are reusable.
 
 ## Automatic WRL formatting
 
@@ -140,16 +136,14 @@ cannot excuse a runtime failure, missing analysis, or incomplete check.
 
 Modes still control blocking: advisory findings do not block unless `--strict`;
 enforced actionable findings block. A current explicit acceptance satisfies the
-review obligation even in strict mode. Existing reasoned waivers remain separate
-and visible in `suppressed`; they are not silently migrated into review judgments.
-`reviews` displays stored evidence and rationale but labels validity
-`not_evaluated`; only a fresh check evaluates it.
+review obligation even in strict mode. `reviews` displays stored evidence and
+rationale but labels validity `not_evaluated`; only a fresh check evaluates it.
 
-Result protocol 3 is the default, with compact check inventory and explicit
-`--detail full`. Use the current bundled result schema for strict validation;
-protocol 2 requires explicit `--output-version 2 --detail full` when a legacy
-projection can represent the result. Rule package schema 3 is a
-separate version from the WRL1 language and review-record schema 1.
+The compact result protocol is the default, with compact check inventory and
+explicit `--detail full`. Use the current bundled result schema for strict
+validation. WRL1, the rule/submission/review/config/fixture contract version,
+and the result protocol are independent things that happen to share the
+same version number today.
 
 ## Agent and CI requirements
 

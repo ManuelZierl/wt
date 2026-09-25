@@ -1,42 +1,41 @@
-for input in jsx::inputs(file) {
-    let type_attr = input.attr("type");
-    if type_attr == () || type_attr.kind != "expression" {
+for m in file.ast_match(
+    "tsx",
+    "<input $$$ type={$PARAM . type === \"number\" ? \"number\" : \"text\"} $$$/>"
+) {
+    if !m.ast_match("tsx", "<input $$$ step={\"any\"} $$$/>").is_empty() {
+        continue;
+    }
+    if !m.ast_match("tsx", "<input $$$ step=\"any\" $$$/>").is_empty() {
         continue;
     }
 
-    let matched = rx::capture_text(
-        "template_number_type",
-        type_attr.canonical
-    );
-    if matched == () {
+    let parameter = m.node("PARAM").text;
+    let conditional_ok = false;
+    for cond in m.ast_match(
+        "tsx",
+        "<input $$$ step={$P . type === \"number\" ? \"any\" : undefined} $$$/>"
+    ) {
+        if cond.node("P").text == parameter {
+            conditional_ok = true;
+        }
+    }
+    if conditional_ok {
         continue;
     }
 
-    if input.has_spread || input.duplicate("type") || input.duplicate("step") {
-        emit(input.span, "unverified-step");
+    let has_step_expr = m.ast_match("tsx", "<input $$$ step={$ANY} $$$/>");
+    let has_step_str = m.ast_match("tsx", "<input $$$ step=\"$ANY\" $$$/>");
+    if has_step_expr.is_empty() && has_step_str.is_empty() {
+        emit(m.span, "decimal-step");
         continue;
     }
 
-    let parameter = matched.group_text("parameter");
-    let step = input.attr("step");
-    if step == () {
-        emit(input.span, "decimal-step");
+    if !m.ast_match("tsx", "<input $$$ step={\"1\"} $$$/>").is_empty()
+        || !m.ast_match("tsx", "<input $$$ step=\"1\" $$$/>").is_empty()
+        || !m.ast_match("tsx", "<input $$$ step={1} $$$/>").is_empty() {
+        emit(m.span, "decimal-step");
         continue;
     }
 
-    if step.static_string == "any" {
-        continue;
-    }
-
-    let expected = parameter
-        + " . type === \"number\" ? \"any\" : undefined";
-    if step.kind == "expression" && step.canonical == expected {
-        continue;
-    }
-
-    if step.static_string == "1" || step.canonical == "1" {
-        emit(input.span, "decimal-step");
-    } else {
-        emit(input.span, "unverified-step");
-    }
+    emit(m.span, "unverified-step");
 }

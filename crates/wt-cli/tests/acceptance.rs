@@ -15,7 +15,7 @@ fn invoke_benchmark(root: &Path, global: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_wt"))
         .current_dir(root)
         .args(args)
-        .args(["--output-version", "2", "--detail", "full", "--root"])
+        .args(["--detail", "full", "--root"])
         .arg(root)
         .arg("--global-dir")
         .arg(global)
@@ -29,7 +29,6 @@ fn invoke_owned(root: &Path, global: &Path, args: &[OsString], input: Option<&st
     command
         .current_dir(root)
         .args(args)
-        .args(["--output-version", "2"])
         .args(if args.iter().any(|arg| arg == "check") {
             &["--detail", "full"][..]
         } else {
@@ -91,21 +90,19 @@ fn assert_result(output: &Output) -> Value {
 
 fn text_submission(id: &str, mode: &str) -> Value {
     json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": id,
         "title": format!("Rule {id}"),
-        "description": "Reports a marker in UTF-8 text files.",
-        "rationale": "The marker is retained as a deterministic acceptance fixture.",
+        "documentation": {"source": "# Marker\n\n## Description\n\nReports a marker in UTF-8 text files.\n\n## Rationale\n\nThe marker is retained as a deterministic acceptance fixture.\n\n## Limitations\n\nOnly UTF-8 text files matching the scope are inspected.\n"},
         "mode": mode,
         "severity": "warning",
         "execution": "file",
         "scope": {"include": ["**/*.txt"]},
         "patterns": {"marker": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "marker found", "help": "remove the marker"}},
-        "limitations": ["Only UTF-8 text files matching the scope are inspected."],
-        "code": {"language": "wt-rule-1", "capabilities": ["text.v1", "regex.v1"], "source": "for matched in rx::find_all(file, \"marker\") { emit(matched.span, \"hit\"); }"},
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": "for matched in rx::find_all(file, \"marker\") { emit(matched.span, \"hit\"); }"},
         "tests": {
-            "schema_version": 2,
+            "schema_version": 1,
             "cases": [
                 {"name": "positive", "files": [{"path": "fixture.txt", "content": "bad\n"}], "expect": [{"path": "fixture.txt", "code": "hit", "kind": "violation"}]},
                 {"name": "negative", "files": [{"path": "fixture.txt", "content": "clean\n"}], "expect": []}
@@ -149,7 +146,7 @@ fn show_roundtrip_validates_submission_disk_manifest_tests_and_new_package() {
     let first_global = tempdir().unwrap();
     let original = text_submission("roundtrip", "advisory");
     let created = create_rule(first_root.path(), first_global.path(), &original);
-    assert_eq!(created["validation"], "passed");
+    assert_eq!(created["data"]["validation"], "passed");
 
     let show = invoke(
         first_root.path(),
@@ -159,7 +156,7 @@ fn show_roundtrip_validates_submission_disk_manifest_tests_and_new_package() {
     );
     assert_eq!(show.status.code(), Some(0));
     let shown = assert_result(&show);
-    let exported = shown["rule"].clone();
+    let exported = shown["data"]["rule"].clone();
     assert_schema("submission", &exported);
 
     let interchange = first_root.path().join("roundtrip.json");
@@ -178,7 +175,7 @@ fn show_roundtrip_validates_submission_disk_manifest_tests_and_new_package() {
     );
     assert_eq!(validated.status.code(), Some(0));
     let validated = assert_result(&validated);
-    assert_eq!(validated["valid"], true);
+    assert_eq!(validated["data"]["valid"], true);
 
     let disk_manifest = first_root.path().join(".wt/rules/roundtrip/rule.json");
     let disk_tests = first_root.path().join(".wt/rules/roundtrip/tests.json");
@@ -192,7 +189,7 @@ fn show_roundtrip_validates_submission_disk_manifest_tests_and_new_package() {
     let second_root = tempdir().unwrap();
     let second_global = tempdir().unwrap();
     let recreated = create_rule(second_root.path(), second_global.path(), &exported);
-    assert_eq!(recreated["validation"], "passed");
+    assert_eq!(recreated["data"]["validation"], "passed");
     let recreated_show = invoke(
         second_root.path(),
         second_global.path(),
@@ -200,7 +197,7 @@ fn show_roundtrip_validates_submission_disk_manifest_tests_and_new_package() {
         None,
     );
     assert_eq!(recreated_show.status.code(), Some(0));
-    assert_eq!(assert_result(&recreated_show)["rule"], exported);
+    assert_eq!(assert_result(&recreated_show)["data"]["rule"], exported);
 }
 
 #[test]
@@ -232,7 +229,7 @@ fn documented_skill_minimal_submission_is_present_and_runnable() {
         None,
     );
     assert_eq!(tested.status.code(), Some(0));
-    assert_eq!(assert_result(&tested)["rules"][0]["passed"], true);
+    assert_eq!(assert_result(&tested)["data"]["rules"][0]["passed"], true);
 
     let checked = invoke(
         root.path(),
@@ -281,13 +278,11 @@ fn plan_has_digest_queries_and_nested_ir_while_not_executing_sources() {
     assert_eq!(output.status.code(), Some(0));
     let value = assert_result(&output);
     assert_schema("plan", &value);
-    assert_eq!(value["executed"], false);
-    assert!(value["plan_digest"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256:"));
-    assert!(!value["queries"].as_array().unwrap().is_empty());
-    assert!(value["rules"][0]["plan"]["ir"]["queries"].is_array());
+    let data = &value["data"];
+    assert_eq!(data["executed"], false);
+    assert!(data["plan_digest"].as_str().unwrap().starts_with("sha256:"));
+    assert!(!data["queries"].as_array().unwrap().is_empty());
+    assert!(data["rules"][0]["plan"]["ir"]["queries"].is_array());
 }
 
 #[test]
@@ -318,7 +313,7 @@ fn disabled_invalid_body_is_skipped_by_check_but_selected_validation_fails() {
     );
     assert_eq!(mode.status.code(), Some(0));
     assert_eq!(
-        assert_result(&mode)["reason"],
+        assert_result(&mode)["data"]["reason"],
         "temporarily disabled for parser maintenance"
     );
     let manifest: Value = serde_json::from_str(
@@ -371,7 +366,10 @@ fn disabled_invalid_body_is_skipped_by_check_but_selected_validation_fails() {
     assert_eq!(validation.status.code(), Some(2));
     let validation = assert_result(&validation);
     assert_eq!(validation["status"], "error");
-    assert!(validation["error"].as_str().unwrap().contains("WT100"));
+    assert!(validation["errors"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("WT100"));
 }
 
 #[test]
@@ -398,7 +396,7 @@ fn selected_fixture_test_does_not_compile_or_run_an_unrelated_rule() {
     );
     assert_eq!(output.status.code(), Some(0));
     let value = assert_result(&output);
-    let rules = value["rules"].as_array().unwrap();
+    let rules = value["data"]["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0]["id"], "local/selected");
     assert_eq!(rules[0]["passed"], true);
@@ -431,7 +429,7 @@ fn no_global_ignores_malformed_global_configuration_and_rules() {
     );
     assert_eq!(output.status.code(), Some(0));
     let value = assert_result(&output);
-    assert_eq!(value["rules"][0]["id"], "local/local-only");
+    assert_eq!(value["data"]["rules"][0]["id"], "local/local-only");
 }
 
 #[test]
@@ -494,31 +492,15 @@ fn changed_empty_work_is_no_work_but_full_empty_scan_is_incomplete() {
 }
 
 #[test]
-fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
+fn findings_retain_full_fields_and_unicode_scalar_coordinates() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
     std::fs::write(root.path().join("unicode.txt"), "λ bad\n").unwrap();
     create_rule(
         root.path(),
         global.path(),
-        &text_submission("unicode-waiver", "enforced"),
+        &text_submission("unicode-finding", "enforced"),
     );
-    let waiver = json!({
-        "schema_version": 2,
-        "waivers": [{
-            "id": "known-unicode-case",
-            "rule_id": "local/unicode-waiver",
-            "code": "hit",
-            "path": "unicode.txt",
-            "matched_text_digest": wt_core::digest_bytes(b"bad"),
-            "reason": "Reviewed Unicode coordinate case"
-        }]
-    });
-    std::fs::write(
-        root.path().join(".wt/waivers.json"),
-        serde_json::to_vec_pretty(&waiver).unwrap(),
-    )
-    .unwrap();
 
     let output = invoke(
         root.path(),
@@ -526,7 +508,7 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         &[
             "check",
             "--rule",
-            "local/unicode-waiver",
+            "local/unicode-finding",
             "--no-global",
             "--no-cache",
             "--format",
@@ -534,11 +516,10 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         ],
         None,
     );
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
     let value = assert_result(&output);
-    assert!(value["diagnostics"].as_array().unwrap().is_empty());
-    assert_eq!(value["suppressed"].as_array().unwrap().len(), 1);
-    let suppressed = &value["suppressed"][0];
+    assert_eq!(value["diagnostics"].as_array().unwrap().len(), 1);
+    let finding = &value["diagnostics"][0];
     for field in [
         "rule_id",
         "rule_digest",
@@ -557,21 +538,19 @@ fn waiver_suppression_retains_full_fields_and_unicode_scalar_coordinates() {
         "end_column",
         "message",
         "help",
-        "waiver_id",
     ] {
         assert!(
-            suppressed.get(field).is_some(),
-            "missing suppressed field {field}: {suppressed}"
+            finding.get(field).is_some(),
+            "missing diagnostic field {field}: {finding}"
         );
     }
-    assert_eq!(suppressed["waiver_id"], "known-unicode-case");
-    assert_eq!(suppressed["start_byte"], 3);
-    assert_eq!(suppressed["end_byte"], 6);
-    assert_eq!(suppressed["start_line"], 1);
-    assert_eq!(suppressed["start_column"], 3);
-    assert_eq!(suppressed["end_line"], 1);
-    assert_eq!(suppressed["end_column"], 6);
-    assert_eq!(suppressed["blocking"], false);
+    assert_eq!(finding["start_byte"], 3);
+    assert_eq!(finding["end_byte"], 6);
+    assert_eq!(finding["start_line"], 1);
+    assert_eq!(finding["start_column"], 3);
+    assert_eq!(finding["end_line"], 1);
+    assert_eq!(finding["end_column"], 6);
+    assert_eq!(finding["blocking"], true);
     assert_eq!(value["coordinate_encoding"], "unicode-scalar-columns");
     assert!(value["effective_policy"].is_object());
     assert!(value["notices"].is_array());
@@ -583,7 +562,7 @@ fn update_requires_and_accepts_a_test_removal_reason() {
     let global = tempdir().unwrap();
     let original = text_submission("removal-reason", "advisory");
     let created = create_rule(root.path(), global.path(), &original);
-    let digest = created["digest"].as_str().unwrap();
+    let digest = created["data"]["digest"].as_str().unwrap();
     let mut replacement = original.clone();
     replacement["tests"]["cases"].as_array_mut().unwrap().pop();
     let replacement_text = replacement.to_string();
@@ -604,7 +583,7 @@ fn update_requires_and_accepts_a_test_removal_reason() {
         Some(&replacement_text),
     );
     assert_eq!(missing_reason.status.code(), Some(2));
-    assert!(assert_result(&missing_reason)["error"]
+    assert!(assert_result(&missing_reason)["errors"][0]["error"]
         .as_str()
         .unwrap()
         .contains("requires a reason"));
@@ -627,7 +606,7 @@ fn update_requires_and_accepts_a_test_removal_reason() {
         Some(&replacement_text),
     );
     assert_eq!(accepted.status.code(), Some(0));
-    assert_eq!(assert_result(&accepted)["validation"], "passed");
+    assert_eq!(assert_result(&accepted)["data"]["validation"], "passed");
 }
 
 #[test]
@@ -675,12 +654,12 @@ fn decimal_invalid_tsx_fails_when_parser_is_demanded_but_guard_skips_parser() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|error| error.to_string().contains("jsx.v1 parse failure")));
+        .any(|error| error.to_string().contains("ast.v1 analysis gap")));
 
     let mut guarded = decimal;
     guarded["id"] = json!("decimal-guard");
     guarded["code"]["source"] = json!(
-        "if false { for input in jsx::inputs(file) { emit(input.span, \"decimal-step\"); } }"
+        "if false { for m in file.ast_match(\"tsx\", \"<input/>\") { emit(m.span, \"decimal-step\"); } }"
     );
     let guarded_root = tempdir().unwrap();
     let guarded_global = tempdir().unwrap();
@@ -733,22 +712,25 @@ fn performance_matrix_work_counts_10k_files_100mib_and_25_100_1000_rules() {
             let directory = rules.join(&id);
             std::fs::create_dir_all(&directory).unwrap();
             let manifest = json!({
-                "schema_version": 2,
+                "schema_version": 1,
                 "id": id,
                 "title": "Matrix rule",
-                "description": "Counts bounded file work.",
-                "rationale": "This ignored test measures work, not a performance promise.",
+                "documentation": {"file": "rule.md"},
                 "mode": "advisory",
                 "severity": "info",
                 "execution": "file",
                 "scope": {"include": ["data/**/*.txt"]},
                 "diagnostics": {"hit": {"kind": "violation", "message": "hit", "help": "review"}},
-                "limitations": [],
                 "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "file": "check.wt"}
             });
             std::fs::write(
                 directory.join("rule.json"),
                 serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                directory.join("rule.md"),
+                "# Matrix rule\n\nCounts bounded file work. This ignored test measures work, not a performance promise.\n",
             )
             .unwrap();
             std::fs::write(

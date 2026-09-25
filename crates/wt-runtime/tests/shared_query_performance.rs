@@ -21,7 +21,7 @@ fn shared_query_performance() {
         let manifest = json!({
             "execution":"file", "patterns":{"call":"request\\((?P<body>[^\\r\\n]*)\\)"},
             "diagnostics":{"hit":{"kind":"violation"}},
-            "code":{"language":"wt-rule-1","capabilities":["text.v1","regex.v1"]}
+            "code":{"language":"wt-rule-1","capabilities":["text.v1"]}
         });
         let programs = (0..consumers)
             .map(|_| compile(&manifest, source).unwrap())

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"name": "query-inside-loop", "files": [{"path": "app/views.py", "fixture": "fixtures/query-inside-loop.py"}], "expect": [{"path": "app/views.py", "code": "possible-n-plus-one", "kind": "review"}]},
+    {"name": "query-outside-loop", "files": [{"path": "app/views.py", "fixture": "fixtures/query-outside-loop.py"}], "expect": []},
+    {"name": "text-in-string-and-comment", "files": [{"path": "app/views.py", "fixture": "fixtures/text-in-string-and-comment.py"}], "expect": []},
+    {"name": "unrelated-loop", "files": [{"path": "app/views.py", "fixture": "fixtures/unrelated-loop.py"}], "expect": []}
+  ]
+}

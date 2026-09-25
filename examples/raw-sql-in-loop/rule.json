@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "id": "raw-sql-in-loop",
+  "title": "Raw SQL string inside a for loop",
+  "documentation": {"file": "rule.md"},
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["app/views.py", "app/tasks.py"]},
+  "patterns": {
+    "raw_sql": "SELECT\\s.*\\bFROM\\b"
+  },
+  "diagnostics": {
+    "raw-sql-in-loop": {
+      "kind": "review",
+      "message": "A raw SQL SELECT is issued from inside this loop's body, once per iteration.",
+      "help": "Move the query above the loop and iterate over its result, or confirm this per-iteration query is intentional."
+    }
+  },
+  "code": {"language": "wt-rule-1", "capabilities": ["ast.v1", "text.v1"], "file": "check.wt"},
+  "tests_file": "tests.json",
+  "metadata": {"source": "Synthetic example combining ast.v1 loop-body scoping with a text.v1 regex search for raw SQL."}
+}

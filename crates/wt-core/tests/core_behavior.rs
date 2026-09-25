@@ -1,23 +1,21 @@
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-use wt_core::{digest_bytes, dispatch};
+use wt_core::dispatch;
 
 fn submission(id: &str, code: &str) -> serde_json::Value {
     serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "id": id,
         "title": id,
-        "description": "test rule",
-        "rationale": "test rationale",
+        "documentation": {"source": "# Test rule\n\n## Description\n\ntest rule\n\n## Rationale\n\ntest rationale\n"},
         "mode": "advisory",
         "severity": "warning",
         "execution": "file",
         "scope": {"include": ["**/*.txt"]},
         "patterns": {"bad": "bad"},
         "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-        "limitations": [],
-        "code": {"language": "wt-rule-1", "capabilities": ["regex.v1"], "source": code}
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": code}
     })
 }
 
@@ -51,7 +49,7 @@ fn check(
     global: &std::path::Path,
     extra: serde_json::Value,
 ) -> serde_json::Value {
-    let mut options = serde_json::json!({"root": root, "global_dir": global, "no_global": true});
+    let mut options = serde_json::json!({"root": root, "global_dir": global, "no_global": true, "detail": "full"});
     for (key, value) in extra.as_object().unwrap() {
         options[key] = value.clone();
     }
@@ -137,7 +135,7 @@ fn git_and_non_git_ignore_keep_tracked_files() {
 }
 
 #[test]
-fn scope_excludes_unrelated_gaps_and_waivers_rerender() {
+fn scope_excludes_unrelated_gaps() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
     fs::create_dir(root.path().join("src")).unwrap();
@@ -159,37 +157,6 @@ fn scope_excludes_unrelated_gaps_and_waivers_rerender() {
     );
     assert_eq!(result["exit_code"], 0, "{result}");
     assert_eq!(result["summary"]["analysis_gaps"], 0);
-
-    fs::write(root.path().join("src/a.txt"), "bad").unwrap();
-    let waiver = serde_json::json!({"schema_version": 2, "waivers": [{
-        "id": "w1", "rule_id": "local/scoped", "code": "hit", "path": "src/a.txt",
-        "matched_text_digest": digest_bytes(b"bad"), "reason": "known test exception"
-    }]});
-    fs::write(
-        root.path().join(".wt/waivers.json"),
-        serde_json::to_vec_pretty(&waiver).unwrap(),
-    )
-    .unwrap();
-    let waived = check(
-        root.path(),
-        global.path(),
-        serde_json::json!({"max_file_bytes": 4}),
-    );
-    assert_eq!(waived["exit_code"], 0, "{waived}");
-    assert!(waived["diagnostics"].as_array().unwrap().is_empty());
-    assert_eq!(waived["suppressed"].as_array().unwrap().len(), 1);
-
-    fs::write(root.path().join("src/a.txt"), "ok").unwrap();
-    let stale = check(
-        root.path(),
-        global.path(),
-        serde_json::json!({"max_file_bytes": 4}),
-    );
-    assert!(stale["notices"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|notice| notice == "w1"));
 }
 
 #[test]
@@ -215,8 +182,8 @@ fn update_requires_current_digest_and_preserves_old_package_on_stale_hash() {
     )
     .unwrap();
     assert_eq!(shown["exit_code"], 0);
-    assert_eq!(shown["rule"]["code"]["source"], stored);
-    assert!(created["digest"].as_str().is_some());
+    assert_eq!(shown["data"]["rule"]["code"]["source"], stored);
+    assert!(created["data"]["digest"].as_str().is_some());
 }
 
 #[test]
@@ -261,7 +228,7 @@ fn raw_cache_is_per_rule_and_fixture_cache_is_digest_gated() {
     let mut tested = submission("cache-tests", code);
     let fixture_prefix = root.path().display().to_string();
     tested["tests"] = serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 1,
         "cases": [
             {"name": "bad", "files": [{"path": "a.txt", "content": format!("bad-{fixture_prefix}")}], "expect": [{"path": "a.txt", "code": "hit", "kind": "violation"}]},
             {"name": "good", "files": [{"path": "a.txt", "content": format!("ok-{fixture_prefix}")}], "expect": []}
@@ -293,7 +260,7 @@ fn raw_cache_is_per_rule_and_fixture_cache_is_digest_gated() {
         "update",
         &serde_json::json!({
             "root": root.path(), "global_dir": global.path(), "id": "local/cache-tests",
-            "expect_hash": created["digest"], "submission": tested
+            "expect_hash": created["data"]["digest"], "submission": tested
         }),
     )
     .unwrap();

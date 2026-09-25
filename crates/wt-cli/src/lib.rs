@@ -47,7 +47,6 @@ pub enum SchemaName {
     Config,
     Result,
     Plan,
-    Waivers,
     Review,
     Capabilities,
 }
@@ -71,8 +70,6 @@ pub struct Cli {
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Common {
-    #[arg(long, global = true, value_name = "N", default_value_t = 3)]
-    pub output_version: u64,
     #[arg(long, global = true, value_name = "PATH")]
     pub root: Option<PathBuf>,
     #[arg(long = "global-dir", global = true, value_name = "PATH")]
@@ -189,14 +186,37 @@ pub enum Command {
         jobs: Option<u64>,
         #[arg(long = "max-file-bytes", value_name = "N")]
         max_file_bytes: Option<u64>,
-        #[arg(long = "show-suppressed")]
-        show_suppressed: bool,
         #[arg(long = "show-reviewed")]
         show_reviewed: bool,
         #[arg(long = "allow-empty")]
         allow_empty: bool,
         #[arg(long)]
         stats: bool,
+    },
+    /// Report per-rule findings and review outcomes to spot noisy and dead rules.
+    Stats {
+        #[arg(value_name = "PATH")]
+        paths: Vec<String>,
+        #[arg(long = "include-ignored")]
+        include_ignored: bool,
+        #[arg(long = "no-host-ignores")]
+        no_host_ignores: bool,
+        #[arg(long = "no-global")]
+        no_global: bool,
+        #[arg(long = "rule", value_name = "ID")]
+        rules: Vec<String>,
+        #[arg(long = "no-cache")]
+        no_cache: bool,
+        #[arg(long, value_enum)]
+        optimizer: Option<Optimizer>,
+        #[arg(long)]
+        changed: bool,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long, value_name = "N")]
+        jobs: Option<u64>,
+        #[arg(long = "max-file-bytes", value_name = "N")]
+        max_file_bytes: Option<u64>,
     },
     /// Inspect shared query planning without checking source files.
     Plan {
@@ -283,8 +303,6 @@ pub enum Command {
     Schema {
         #[arg(value_enum, value_name = "NAME")]
         name: SchemaName,
-        #[arg(long, value_name = "N")]
-        schema_version: Option<u64>,
     },
     /// Manage derived caches; review records are never cache entries.
     Cache {
@@ -314,13 +332,7 @@ where
                 )
             {
                 let command = command_name(&args);
-                let version = args
-                    .windows(2)
-                    .find(|pair| pair[0] == "--output-version")
-                    .and_then(|pair| pair[1].to_str())
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(3);
-                print_json(&command_error(&command, error.to_string(), version));
+                print_json(&command_error(&command, error.to_string()));
                 2
             } else {
                 let code = if matches!(
@@ -341,19 +353,11 @@ where
 fn execute(cli: Cli) -> i32 {
     let command = command_string(&cli.command);
     let display = match &cli.command {
-        Command::Check {
-            show_reviewed,
-            show_suppressed,
-            ..
-        } => (*show_reviewed, *show_suppressed),
-        _ => (false, false),
+        Command::Check { show_reviewed, .. } => *show_reviewed,
+        _ => false,
     };
-    if let Command::Schema {
-        name,
-        schema_version,
-    } = &cli.command
-    {
-        return print_bundled_schema(name, *schema_version);
+    if let Command::Schema { name } = &cli.command {
+        return print_bundled_schema(name);
     }
     let options = match options(&cli) {
         Ok(options) => options,
@@ -362,7 +366,6 @@ fn execute(cli: Cli) -> i32 {
                 &cli.common.format,
                 &cli.common.color,
                 &command,
-                cli.common.output_version,
                 display,
                 Err(error),
             );
@@ -375,31 +378,14 @@ fn execute(cli: Cli) -> i32 {
         &cli.common.format,
         &cli.common.color,
         &command,
-        cli.common.output_version,
         display,
         result,
     )
 }
 
-fn print_bundled_schema(name: &SchemaName, version: Option<u64>) -> i32 {
-    if let Some(version) = version {
-        let supported = match name {
-            SchemaName::Result | SchemaName::Config | SchemaName::Rule | SchemaName::Submission => {
-                matches!(version, 2 | 3)
-            }
-            SchemaName::Review | SchemaName::Capabilities => version == 1,
-            SchemaName::Tests | SchemaName::Waivers | SchemaName::Plan => version == 2,
-        };
-        if !supported {
-            eprintln!(
-                "unsupported schema version {version} for {}",
-                schema_string(name)
-            );
-            return 2;
-        }
-    }
+fn print_bundled_schema(name: &SchemaName) -> i32 {
     if matches!(name, SchemaName::Rule | SchemaName::Submission) {
-        let schema = wt_core::package_schema(schema_string(name), version.unwrap_or(3));
+        let schema = wt_core::package_schema(schema_string(name), 1);
         return match schema {
             Ok(schema) => {
                 print_json(&schema);
@@ -415,16 +401,9 @@ fn print_bundled_schema(name: &SchemaName, version: Option<u64>) -> i32 {
         SchemaName::Rule => include_str!("../../../schemas/rule.schema.json"),
         SchemaName::Submission => include_str!("../../../schemas/submission.schema.json"),
         SchemaName::Tests => include_str!("../../../schemas/tests.schema.json"),
-        SchemaName::Config if version == Some(2) => {
-            include_str!("../../../schemas/config-v2.schema.json")
-        }
         SchemaName::Config => include_str!("../../../schemas/config.schema.json"),
-        SchemaName::Result if version != Some(2) => {
-            include_str!("../../../schemas/result-v3.schema.json")
-        }
         SchemaName::Result => include_str!("../../../schemas/result.schema.json"),
         SchemaName::Plan => include_str!("../../../schemas/plan.schema.json"),
-        SchemaName::Waivers => include_str!("../../../schemas/waivers.schema.json"),
         SchemaName::Review => include_str!("../../../schemas/review.schema.json"),
         SchemaName::Capabilities => include_str!("../../../schemas/capabilities.schema.json"),
     };
@@ -533,7 +512,6 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             base,
             jobs,
             max_file_bytes,
-            show_suppressed,
             show_reviewed,
             allow_empty,
             stats,
@@ -573,15 +551,53 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             if let Some(max_file_bytes) = max_file_bytes {
                 object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
             }
-            insert_if_true(&mut object, "show_suppressed", *show_suppressed);
             insert_if_true(&mut object, "show_reviewed", *show_reviewed);
-            if matches!(cli.common.format, OutputFormat::Text)
-                && (*show_reviewed || *show_suppressed)
-            {
+            if matches!(cli.common.format, OutputFormat::Text) && *show_reviewed {
                 object.insert("detail".to_owned(), json!("full"));
             }
             insert_if_true(&mut object, "allow_empty", *allow_empty);
             insert_if_true(&mut object, "stats", *stats);
+            if !paths.is_empty() {
+                object.insert("paths".to_owned(), json!(paths));
+            }
+        }
+        Command::Stats {
+            paths,
+            include_ignored,
+            no_host_ignores,
+            no_global,
+            rules,
+            no_cache,
+            optimizer,
+            changed,
+            base,
+            jobs,
+            max_file_bytes,
+        } => {
+            insert_if_true(&mut object, "include_ignored", *include_ignored);
+            insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
+            insert_if_true(&mut object, "no_global", *no_global);
+            insert_if_nonempty(&mut object, "rules", rules);
+            insert_if_true(&mut object, "no_cache", *no_cache);
+            if let Some(mode) = optimizer {
+                object.insert(
+                    "optimizer".to_owned(),
+                    json!(match mode {
+                        Optimizer::Auto => "auto",
+                        Optimizer::Off => "off",
+                    }),
+                );
+            }
+            insert_if_true(&mut object, "changed", *changed);
+            if let Some(base) = base {
+                object.insert("base".to_owned(), json!(base));
+            }
+            if let Some(jobs) = jobs {
+                object.insert("jobs".to_owned(), json!(jobs));
+            }
+            if let Some(max_file_bytes) = max_file_bytes {
+                object.insert("max_file_bytes".to_owned(), json!(max_file_bytes));
+            }
             if !paths.is_empty() {
                 object.insert("paths".to_owned(), json!(paths));
             }
@@ -677,14 +693,8 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
             insert_if_true(&mut object, "include_ignored", *include_ignored);
             insert_if_true(&mut object, "no_host_ignores", *no_host_ignores);
         }
-        Command::Schema {
-            name,
-            schema_version,
-        } => {
+        Command::Schema { name } => {
             object.insert("schema".to_owned(), json!(schema_string(name)));
-            if let Some(version) = schema_version {
-                object.insert("schema_version".to_owned(), json!(version));
-            }
         }
         Command::Cache { command } => match command {
             CacheCommand::Clear => {}
@@ -695,7 +705,6 @@ fn options(cli: &Cli) -> anyhow::Result<Value> {
 
 fn common_options(common: &Common) -> Map<String, Value> {
     let mut object = Map::new();
-    object.insert("output_version".to_owned(), json!(common.output_version));
     if let Some(root) = &common.root {
         object.insert("root".to_owned(), json!(root));
     }
@@ -761,13 +770,12 @@ fn finish(
     format: &OutputFormat,
     color: &ColorMode,
     command: &str,
-    version: u64,
-    display: (bool, bool),
+    display: bool,
     result: anyhow::Result<Value>,
 ) -> i32 {
     let value = match result {
         Ok(value) => value,
-        Err(error) => command_error(command, error.to_string(), version),
+        Err(error) => command_error(command, error.to_string()),
     };
     let exit_code = value
         .get("exit_code")
@@ -781,12 +789,9 @@ fn finish(
     exit_code
 }
 
-fn command_error(command: &str, error: String, version: u64) -> Value {
-    if version == 2 {
-        return json!({"schema_version":2,"command":command,"status":"error","exit_code":2,"error":error});
-    }
+fn command_error(command: &str, error: String) -> Value {
     json!({
-        "schema_version": 3,
+        "schema_version": 1,
         "command": command,
         "status": "error",
         "exit_code": 2,
@@ -807,7 +812,7 @@ fn print_json(value: &Value) {
     }
 }
 
-fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
+fn print_text(value: &Value, color: &ColorMode, display: bool) {
     if let Some(error) = value
         .get("error")
         .or_else(|| value["errors"].get(0).and_then(|e| e.get("error")))
@@ -824,6 +829,52 @@ fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
             println!("{text}");
             return;
         }
+    }
+    if value.get("command").and_then(Value::as_str) == Some("stats") {
+        let data = &value["data"];
+        for rule in data["rules"].as_array().into_iter().flatten() {
+            let signal = rule["signal"].as_str().unwrap_or("unknown");
+            let label = style_signal(signal, color);
+            let decisions = &rule["review_decisions"];
+            println!(
+                "{:<9} {} [{}, {}]",
+                label,
+                rule["id"].as_str().unwrap_or("<unknown>"),
+                rule["mode"].as_str().unwrap_or("?"),
+                rule["severity"].as_str().unwrap_or("?"),
+            );
+            println!(
+                "  raw={} acceptable={} confirmed_issue={} accepted_risk={} needs_review={} stale={}",
+                rule["raw_findings"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_owned()),
+                decisions["acceptable"].as_u64().unwrap_or(0),
+                decisions["confirmed_issue"].as_u64().unwrap_or(0),
+                decisions["accepted_risk"].as_u64().unwrap_or(0),
+                decisions["needs_review"].as_u64().unwrap_or(0),
+                rule["stale_decisions"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_owned()),
+            );
+        }
+        let signals = &data["signals"];
+        println!(
+            "{} dead, {} noisy, {} active, {} useful, {} disabled, {} unknown; {}.",
+            signals["dead"].as_u64().unwrap_or(0),
+            signals["noisy"].as_u64().unwrap_or(0),
+            signals["active"].as_u64().unwrap_or(0),
+            signals["useful"].as_u64().unwrap_or(0),
+            signals["disabled"].as_u64().unwrap_or(0),
+            signals["unknown"].as_u64().unwrap_or(0),
+            if data["complete"] == true {
+                "analysis complete"
+            } else {
+                "analysis incomplete"
+            }
+        );
+        return;
     }
     if value.get("command").and_then(Value::as_str) == Some("check") {
         if let Some(diagnostics) = value.get("diagnostics").and_then(Value::as_array) {
@@ -877,7 +928,7 @@ fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
                 println!("analysis error: {}", error);
             }
         }
-        if display.0 {
+        if display {
             for finding in value["reviewed"].as_array().into_iter().flatten() {
                 println!(
                     "REVIEWED {}:{} {}",
@@ -885,24 +936,6 @@ fn print_text(value: &Value, color: &ColorMode, display: (bool, bool)) {
                     finding["start_line"],
                     finding["rule_id"].as_str().unwrap_or("<unknown>")
                 );
-            }
-        }
-        if display.1 {
-            for finding in value["suppressed"].as_array().into_iter().flatten() {
-                println!(
-                    "WAIVED {}:{} {}",
-                    finding["path"].as_str().unwrap_or("<unknown>"),
-                    finding["start_line"],
-                    finding["rule_id"].as_str().unwrap_or("<unknown>")
-                );
-            }
-        }
-        if value["schema_version"] == 2 {
-            if let Some(records) = value.get("reviewed").and_then(Value::as_array) {
-                println!(
-                "{} occurrence(s) covered by current explicit review decisions (retained in JSON).",
-                records.len()
-            );
             }
         }
         let summary = &value["summary"];
@@ -940,6 +973,25 @@ fn style_label(label: &str, color: &ColorMode) -> String {
     format!("\u{1b}[{code}m{label}\u{1b}[0m")
 }
 
+fn style_signal(signal: &str, color: &ColorMode) -> String {
+    let label = signal.to_uppercase();
+    let enabled = match color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    };
+    if !enabled {
+        return label;
+    }
+    let code = match signal {
+        "dead" | "noisy" => "31",
+        "unknown" => "33",
+        "useful" => "32",
+        _ => "0",
+    };
+    format!("\u{1b}[{code}m{label}\u{1b}[0m")
+}
+
 fn insert_if_true(object: &mut Map<String, Value>, key: &str, value: bool) {
     if value {
         object.insert(key.to_owned(), json!(true));
@@ -963,6 +1015,7 @@ fn command_string(command: &Command) -> String {
         Command::Init { .. } => "init",
         Command::New { .. } => "new",
         Command::Check { .. } => "check",
+        Command::Stats { .. } => "stats",
         Command::Plan { .. } => "plan",
         Command::List { .. } => "list",
         Command::Show { .. } => "show",
@@ -994,6 +1047,7 @@ fn command_name(args: &[OsString]) -> String {
                     | "init"
                     | "new"
                     | "check"
+                    | "stats"
                     | "plan"
                     | "list"
                     | "show"
@@ -1050,7 +1104,6 @@ fn schema_string(value: &SchemaName) -> &'static str {
         SchemaName::Config => "config",
         SchemaName::Result => "result",
         SchemaName::Plan => "plan",
-        SchemaName::Waivers => "waivers",
         SchemaName::Review => "review",
         SchemaName::Capabilities => "capabilities",
     }

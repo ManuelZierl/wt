@@ -6,7 +6,6 @@ use crate::fixtures;
 use crate::reviews;
 use crate::rule::{self, RulePackage, Submission};
 use crate::selection::{self, SelectedFile};
-use crate::waivers;
 use anyhow::{anyhow, bail, Result};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde_json::{json, Map, Value};
@@ -20,7 +19,6 @@ const COMMON_OPTIONS: &[&str] = &[
     "global_dir",
     "format",
     "color",
-    "output_version",
     "_worker_executable",
 ];
 
@@ -40,6 +38,7 @@ pub fn dispatch(command: &str, options: &Value) -> Result<Value> {
         "new" => create(options),
         "update" => update(options),
         "check" => check(options),
+        "stats" => stats(options),
         "plan" => plan(options),
         "list" => list(options),
         "show" => show(options),
@@ -102,15 +101,27 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             "base",
             "jobs",
             "max_file_bytes",
-            "show_suppressed",
             "show_reviewed",
             "allow_empty",
             "stats",
         ],
+        "stats" => &[
+            "paths",
+            "include_ignored",
+            "no_host_ignores",
+            "no_global",
+            "rules",
+            "no_cache",
+            "optimizer",
+            "changed",
+            "base",
+            "jobs",
+            "max_file_bytes",
+        ],
         "plan" => &["rules", "rule", "no_global", "optimizer"],
         "list" => &["no_global"],
         "config" => &["no_global", "max_file_bytes"],
-        "schema" => &["schema", "id", "schema_version"],
+        "schema" => &["schema", "id"],
         "show" | "validate" | "test" => &["id", "rules", "rule", "no_global", "submission"],
         "set-mode" => &["id", "mode", "reason", "no_global"],
         "explain" => &[
@@ -145,11 +156,6 @@ fn validate_options(command: &str, options: &Value) -> Result<()> {
             bail!("jobs must be between 1 and 3 under the absolute worker memory ceiling")
         }
     }
-    if let Some(version) = object.get("output_version") {
-        if !matches!(version.as_u64(), Some(2 | 3)) {
-            bail!("output_version must be 2 or 3")
-        }
-    }
     if let Some(detail) = object.get("detail") {
         if !matches!(detail.as_str(), Some("summary" | "full")) {
             bail!("detail must be summary or full")
@@ -172,7 +178,7 @@ fn init(options: &Value) -> Result<Value> {
         write_create_new(
             &config_path,
             br#"{
-  "schema_version": 3,
+  "schema_version": 1,
   "scan": {
     "respect_gitignore": true,
     "honor_git_local_excludes": true,
@@ -398,7 +404,7 @@ fn update(options: &Value) -> Result<Value> {
             "code": package.source != candidate.source,
             "patterns": json!(package.manifest.patterns) != json!(candidate.manifest.patterns),
             "diagnostics": json!(package.manifest.diagnostics) != json!(candidate.manifest.diagnostics),
-            "documentation": old_submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()) != submission.documentation.as_ref().and_then(|doc| doc.source.as_ref()),
+            "documentation": old_submission.documentation.source != submission.documentation.source,
             "scope": serde_json::to_value(&package.manifest.scope)? != serde_json::to_value(&candidate.manifest.scope)?,
             "mode": package.manifest.mode != candidate.manifest.mode,
             "execution": package.manifest.execution != candidate.manifest.execution,
@@ -797,22 +803,13 @@ fn check(options: &Value) -> Result<Value> {
         })
         .cloned()
         .collect::<Vec<_>>();
-    let waiver_file = if preview {
-        None
-    } else {
-        waivers::load(&workspace.local_dir.join("waivers.json"))?
-    };
-    let (diagnostics, suppressed, stale) =
-        render_records(&records, &workspace, waiver_file.as_ref(), options)?;
-    if !stale.is_empty() && bool_option(options, "strict", false)? {
-        errors.push(json!({"error": "stale_waivers", "waivers": stale}));
-    }
+    let diagnostics = render_records(&records, &workspace, options)?;
     let review_result = (if preview {
         Ok(reviews::Store::default())
     } else {
         reviews::load(&workspace.root)
     })
-    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &suppressed, &store));
+    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &store));
     let (diagnostics, reviewed, review_records, evidence_reads) = match review_result {
         Ok(state) => (
             state.diagnostics,
@@ -825,7 +822,7 @@ fn check(options: &Value) -> Result<Value> {
             (diagnostics, Vec::new(), Vec::new(), None)
         }
     };
-    let mut notices = stale.clone();
+    let mut notices = Vec::new();
     notices.extend(cache.notices.clone());
     let partial_policy = selection.partial || requested.is_some() || preview;
     let coverage_expectations = workspace.effective_config.expectations.iter().map(|entry| {
@@ -920,7 +917,7 @@ fn check(options: &Value) -> Result<Value> {
         .filter(|file| file.status == "binary")
         .count();
     let mut result = json!({
-        "schema_version": 2,
+        "schema_version": crate::CONTRACT_VERSION,
         "command": "check",
         "status": status,
         "exit_code": if !allow_empty && !no_work && (enabled.is_empty() || relevant_files.is_empty()) { 2 } else { exit_code },
@@ -933,14 +930,13 @@ fn check(options: &Value) -> Result<Value> {
         "coverage_expectations": coverage_expectations,
         "coordinate_encoding": "unicode-scalar-columns",
         "diagnostics": diagnostics,
-        "suppressed": suppressed,
         "reviewed": reviewed,
         "review_records": review_records,
         "notices": notices,
         "errors": errors,
         "rules": rule_summaries,
         "files": selection.coverage,
-        "summary": {"raw_findings": diagnostics.len()+reviewed.len()+suppressed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
+        "summary": {"raw_findings": diagnostics.len()+reviewed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
         "gaps": relevant_gaps,
     });
     if bool_option(options, "stats", false)? {
@@ -960,6 +956,175 @@ fn check(options: &Value) -> Result<Value> {
         result["preview"] = json!(true);
     }
     Ok(result)
+}
+
+/// `wt stats`: a read-only view over data `wt check` and the review store
+/// already produce. No history is kept; every number is recomputed from the
+/// current repository, rules and stored review records on each run.
+///
+/// Per rule this reports the mode/severity, the raw findings from a check run
+/// with the same scope and flags as `wt check`, review decisions by outcome,
+/// how many of those decisions are currently stale, and one derived signal:
+/// - `disabled`: the rule does not currently execute.
+/// - `unknown`: the underlying check was incomplete; a signal would be a guess.
+/// - `useful`: at least one occurrence was confirmed as a real issue.
+/// - `dead`: no current findings and no review decisions at all.
+/// - `noisy`: most decided findings were accepted as acceptable.
+/// - `active`: none of the above; the rule has activity that has not settled
+///   into a clear pattern yet.
+fn stats(options: &Value) -> Result<Value> {
+    let mut check_options = Map::new();
+    for key in COMMON_OPTIONS.iter().copied().chain([
+        "paths",
+        "include_ignored",
+        "no_host_ignores",
+        "no_global",
+        "rules",
+        "no_cache",
+        "optimizer",
+        "changed",
+        "base",
+        "jobs",
+        "max_file_bytes",
+    ]) {
+        if let Some(value) = options.get(key) {
+            check_options.insert(key.to_owned(), value.clone());
+        }
+    }
+    // A rule that is disabled, or a repository with nothing currently
+    // enabled or matching, is still meaningful stats output (every rule
+    // reports as `disabled` or `dead`), not a hard failure.
+    check_options.insert("allow_empty".to_owned(), json!(true));
+    let checked = check(&Value::Object(check_options))?;
+    let complete = checked["complete"] == true;
+
+    let workspace = discovery::discover(options)?;
+    let requested = requested_rules(options)?;
+    let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
+
+    // A corrupt or inconsistent review store is already surfaced through
+    // `checked["errors"]` and `complete == false`; do not let it turn the
+    // whole stats command into a hard error.
+    let all_reviews =
+        reviews::list(&workspace.root, None).unwrap_or_else(|_| json!({"reviews": []}));
+    let mut finding_rule = BTreeMap::<String, String>::new();
+    let mut review_by_rule = BTreeMap::<String, [u64; 4]>::new();
+    for entry in all_reviews["reviews"].as_array().into_iter().flatten() {
+        let rule_id = entry["record"]["rule_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let finding_id = entry["record"]["finding_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        finding_rule.insert(finding_id, rule_id.clone());
+        let counts = review_by_rule.entry(rule_id).or_insert([0; 4]);
+        match entry["record"]["decision"].as_str() {
+            Some("acceptable") => counts[0] += 1,
+            Some("confirmed_issue") => counts[1] += 1,
+            Some("accepted_risk") => counts[2] += 1,
+            Some("needs_review") => counts[3] += 1,
+            _ => {}
+        }
+    }
+
+    let mut stale_by_rule = BTreeMap::<String, u64>::new();
+    let mut raw_by_rule = BTreeMap::<String, u64>::new();
+    if complete {
+        for record in checked["review_records"].as_array().into_iter().flatten() {
+            if record["validity"] == "stale" {
+                if let Some(rule_id) = record["finding_id"]
+                    .as_str()
+                    .and_then(|id| finding_rule.get(id))
+                {
+                    *stale_by_rule.entry(rule_id.clone()).or_default() += 1;
+                }
+            }
+        }
+        for finding in checked["diagnostics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(checked["reviewed"].as_array().into_iter().flatten())
+        {
+            if let Some(rule_id) = finding["rule_id"].as_str() {
+                *raw_by_rule.entry(rule_id.to_owned()).or_default() += 1;
+            }
+        }
+    }
+
+    let mut rules_out = Vec::new();
+    for package in selected {
+        let id = package.qualified_id.clone();
+        let mode = effective_mode(&workspace, package);
+        let severity = package.manifest.severity.clone();
+        let raw_findings = raw_by_rule.get(&id).copied().unwrap_or(0);
+        let counts = review_by_rule.get(&id).copied().unwrap_or([0; 4]);
+        let stale = stale_by_rule.get(&id).copied().unwrap_or(0);
+        let decided = counts[0] + counts[1] + counts[2];
+        let signal = if mode == "disabled" {
+            "disabled"
+        } else if !complete {
+            "unknown"
+        } else if counts[1] > 0 {
+            "useful"
+        } else if raw_findings == 0 && decided == 0 && counts[3] == 0 {
+            "dead"
+        } else if decided > 0 && counts[0] * 2 > decided {
+            "noisy"
+        } else {
+            "active"
+        };
+        rules_out.push(json!({
+            "id": id,
+            "mode": mode,
+            "severity": severity,
+            "raw_findings": if complete { json!(raw_findings) } else { Value::Null },
+            "review_decisions": {"acceptable": counts[0], "confirmed_issue": counts[1],
+                "accepted_risk": counts[2], "needs_review": counts[3]},
+            "stale_decisions": if complete { json!(stale) } else { Value::Null },
+            "signal": signal,
+        }));
+    }
+    rules_out.sort_by(|left, right| {
+        signal_rank(left["signal"].as_str().unwrap_or(""))
+            .cmp(&signal_rank(right["signal"].as_str().unwrap_or("")))
+            .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
+    });
+    let mut signals = Map::new();
+    for signal in ["dead", "noisy", "active", "useful", "disabled", "unknown"] {
+        let count = rules_out
+            .iter()
+            .filter(|rule| rule["signal"] == signal)
+            .count();
+        signals.insert(signal.to_owned(), json!(count));
+    }
+    Ok(envelope(
+        "stats",
+        if complete { "pass" } else { "incomplete" },
+        if complete { 0 } else { 2 },
+        json!({
+            "complete": complete,
+            "root": workspace.root,
+            "scope": checked["scope"],
+            "rules": rules_out,
+            "signals": signals,
+            "errors": checked["errors"],
+        }),
+    ))
+}
+
+fn signal_rank(signal: &str) -> u8 {
+    match signal {
+        "dead" => 0,
+        "noisy" => 1,
+        "active" => 2,
+        "useful" => 3,
+        "unknown" => 4,
+        "disabled" => 5,
+        _ => 6,
+    }
 }
 
 struct FileExecution<'a> {
@@ -1400,28 +1565,15 @@ fn schema(options: &Value) -> Result<Value> {
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("schema name is required"))?;
     if matches!(name.as_str(), "rule" | "submission") {
-        return crate::package_schema(
-            &name,
-            options
-                .get("schema_version")
-                .and_then(Value::as_u64)
-                .unwrap_or(3),
-        );
+        return crate::package_schema(&name, crate::CONTRACT_VERSION);
     }
     let schema = match name.as_str() {
         "rule" => include_str!("../../../schemas/rule.schema.json"),
         "submission" => include_str!("../../../schemas/submission.schema.json"),
         "tests" => include_str!("../../../schemas/tests.schema.json"),
-        "config" if options.get("schema_version").and_then(Value::as_u64) == Some(2) => {
-            include_str!("../../../schemas/config-v2.schema.json")
-        }
         "config" => include_str!("../../../schemas/config.schema.json"),
-        "result" if options.get("schema_version").and_then(Value::as_u64) != Some(2) => {
-            include_str!("../../../schemas/result-v3.schema.json")
-        }
         "result" => include_str!("../../../schemas/result.schema.json"),
         "plan" => include_str!("../../../schemas/plan.schema.json"),
-        "waivers" => include_str!("../../../schemas/waivers.schema.json"),
         "review" => include_str!("../../../schemas/review.schema.json"),
         "capabilities" => include_str!("../../../schemas/capabilities.schema.json"),
         _ => bail!("unknown schema {name:?}"),
@@ -1429,11 +1581,10 @@ fn schema(options: &Value) -> Result<Value> {
     crate::parse_json(schema)
 }
 
-const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit schema-3 JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
+const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
 const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
-const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1, regex.v1 and jsx.v1 are explicit capabilities. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
-const MIGRATION_GUIDE: &str = "Schema-2 rule packages remain readable. A deliberate wt update converts prose into rule.md and formats check.wt while preserving fixtures. Configuration schema 3 adds coverage.expectations; schema 2 remains readable. Never infer an acceptance from an old waiver. Recheck review evidence after package edits.";
-
+const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and ast.v1 are explicit capabilities. ast.v1 adds file.ast_match(language, pattern) for structural matches, m.node(\"NAME\") for a captured metavariable, and m.ast_match(language, pattern) to search inside a match; a file with any parse error node is an analysis gap, never a silent no-match. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
+const STATS_GUIDE: &str = "wt stats runs a check with the same scope and flags as wt check, then reports per qualified rule: mode, severity, raw findings from that run, stored review decisions by outcome (acceptable, confirmed_issue, accepted_risk, needs_review), and how many of those decisions are currently stale. It keeps no history; every number is recomputed from the current repository, rules and review store. Each rule gets exactly one derived signal, in this priority order: disabled (mode is disabled), unknown (the underlying check was incomplete; never reported as dead), useful (at least one confirmed_issue decision), dead (no current findings and no review decisions at all), noisy (more than half of decided findings were accepted as acceptable), otherwise active. Run it before adding many new rules, or when a check has become noisy.";
 fn guide(options: &Value) -> Result<Value> {
     let topic = options
         .get("topic")
@@ -1443,9 +1594,9 @@ fn guide(options: &Value) -> Result<Value> {
         "author" => AUTHOR_GUIDE,
         "review" => REVIEW_GUIDE,
         "language" => LANGUAGE_GUIDE,
-        "migration" => MIGRATION_GUIDE,
+        "stats" => STATS_GUIDE,
         _ => bail!(
-            "unknown installed guide topic {topic:?}; choose author, review, language or migration"
+            "unknown installed guide topic {topic:?}; choose author, review, language or stats"
         ),
     };
     Ok(envelope(
@@ -1459,17 +1610,17 @@ fn guide(options: &Value) -> Result<Value> {
 
 fn capabilities() -> Result<Value> {
     Ok(
-        json!({"schema_version":1,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
-        "specification_profile":{"target_revision":3,"qualification":"not_yet_qualified"},
-        "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_v3","candidate_preview","configurable_logical_budgets"],
-        "schemas":{"rule":[2,3],"submission":[2,3],"config":[2,3],"tests":[2],"review":[1],"waivers":[2],"result":[2,3],"plan":[2],"capabilities":[1]},
-        "language":"wt-rule-1", "helpers":["text.v1","regex.v1","jsx.v1"],
-        "commands":["init","capabilities","guide","new","update","check","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
+        json!({"schema_version":crate::CONTRACT_VERSION,"command":"capabilities","build":{"version":env!("CARGO_PKG_VERSION"),"commit":option_env!("WT_BUILD_COMMIT").unwrap_or("unknown")},
+        "features":["readable_rules","occurrence_reviews","coverage_expectations","compact_result_protocol","candidate_preview","configurable_logical_budgets"],
+        "schemas":{"rule":[crate::CONTRACT_VERSION],"submission":[crate::CONTRACT_VERSION],"config":[crate::CONTRACT_VERSION],"tests":[crate::CONTRACT_VERSION],"review":[crate::CONTRACT_VERSION],"result":[crate::CONTRACT_VERSION],"plan":[crate::CONTRACT_VERSION],"capabilities":[crate::CONTRACT_VERSION]},
+        "language":"wt-rule-1", "helpers":["text.v1","ast.v1"],
+        "ast":{"engine":wt_runtime::AST_ENGINE,"languages":wt_runtime::ast_supported_language_grammars().into_iter().map(|(language,grammar)| json!({"language":language,"grammar":grammar})).collect::<Vec<_>>()},
+        "commands":["init","capabilities","guide","new","update","check","stats","fmt","plan","list","show","validate","test","review","reviews","inspect","set-mode","explain","config","schema","cache clear"],
         "guide_digests":{
             "author":crate::digest::digest_bytes(AUTHOR_GUIDE.as_bytes()),
             "review":crate::digest::digest_bytes(REVIEW_GUIDE.as_bytes()),
             "language":crate::digest::digest_bytes(LANGUAGE_GUIDE.as_bytes()),
-            "migration":crate::digest::digest_bytes(MIGRATION_GUIDE.as_bytes())
+            "stats":crate::digest::digest_bytes(STATS_GUIDE.as_bytes())
         },
         "configuration_keys":["scan.respect_gitignore","scan.honor_git_local_excludes","scan.include_hidden","scan.max_file_bytes","scan.exclude","runtime.file_steps","runtime.file_native_bytes","runtime.repository_steps","runtime.repository_native_bytes","runtime.worker_memory_bytes","runtime.parent_memory_bytes","runtime.total_memory_bytes","optimizer.mode","rules.mode_overrides","coverage.expectations"],
         "check_options":{"optimizer":["auto","off"],"maximum_jobs":3,"maximum_file_bytes":67108864},
@@ -1674,9 +1825,8 @@ fn add_records<'a>(
 fn render_records(
     records: &[Record],
     workspace: &Workspace,
-    waiver_file: Option<&waivers::WaiverFile>,
     options: &Value,
-) -> Result<(Vec<Value>, Vec<Value>, Vec<String>)> {
+) -> Result<Vec<Value>> {
     let mut ordered = records.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
         (
@@ -1701,70 +1851,10 @@ fn render_records(
             && right.diagnostic.start_byte == left.diagnostic.start_byte
             && right.diagnostic.end_byte == left.diagnostic.end_byte
     });
-    let mut groups: BTreeMap<(String, String, String), Vec<usize>> = BTreeMap::new();
-    for (index, record) in ordered.iter().enumerate() {
-        groups
-            .entry((
-                record.rule_id.clone(),
-                record.diagnostic.code.clone(),
-                record.diagnostic.path.clone(),
-            ))
-            .or_default()
-            .push(index);
-    }
-    let mut suppressed_indices = HashSet::new();
-    let mut suppressed = Vec::new();
-    let mut stale = Vec::new();
-    let mut considered = HashSet::new();
-    for ((rule_id, code, path), indexes) in groups {
-        considered.insert((rule_id.clone(), code.clone(), path.clone()));
-        let digests = indexes
-            .iter()
-            .map(|index| ordered[*index].matched_digest.clone())
-            .collect::<Vec<_>>();
-        let application = waivers::apply(waiver_file, &rule_id, &code, &path, &digests, |_| {})?;
-        if waiver_file.is_some() {
-            for (waiver_id, local_index) in application
-                .suppressed
-                .iter()
-                .zip(application.suppressed_indices)
-            {
-                if let Some(index) = indexes.get(local_index) {
-                    suppressed_indices.insert(*index);
-                    let mut diagnostic = diagnostic_value(ordered[*index], workspace, options)?;
-                    diagnostic["waiver_id"] = json!(waiver_id);
-                    diagnostic["blocking"] = json!(false);
-                    suppressed.push(diagnostic);
-                }
-            }
-        }
-        stale.extend(application.stale);
-    }
-    if let Some(file) = waiver_file {
-        for waiver in &file.waivers {
-            let key = (
-                waiver.rule_id.clone(),
-                waiver.code.clone(),
-                waiver.path.clone(),
-            );
-            if !considered.contains(&key)
-                && !suppressed
-                    .iter()
-                    .any(|value| value["waiver_id"] == waiver.id)
-            {
-                stale.push(waiver.id.clone());
-            }
-        }
-    }
-    stale.sort();
-    stale.dedup();
-    let diagnostics = ordered
+    ordered
         .iter()
-        .enumerate()
-        .filter(|(index, _)| !suppressed_indices.contains(index))
-        .map(|(_, record)| diagnostic_value(record, workspace, options))
-        .collect::<Result<Vec<_>>>()?;
-    Ok((diagnostics, suppressed, stale))
+        .map(|record| diagnostic_value(record, workspace, options))
+        .collect::<Result<Vec<_>>>()
 }
 
 fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> Result<Value> {
@@ -1833,7 +1923,7 @@ fn envelope(command: &str, status: &str, exit_code: i32, fields: Value) -> Value
         Value::Object(value) => value,
         _ => Map::new(),
     };
-    object.insert("schema_version".to_owned(), json!(2));
+    object.insert("schema_version".to_owned(), json!(crate::CONTRACT_VERSION));
     object.insert("command".to_owned(), json!(command));
     object.insert("status".to_owned(), json!(status));
     object.insert("exit_code".to_owned(), json!(exit_code));
@@ -1862,12 +1952,14 @@ fn write_replacement(parent: &Path, submission: &Submission) -> Result<tempfile:
             .unwrap_or_default()
             .as_bytes(),
     )?;
-    if let Some(doc) = &submission.documentation {
-        fs::write(
-            temp.path().join("rule.md"),
-            doc.source.as_deref().unwrap_or_default(),
-        )?;
-    }
+    fs::write(
+        temp.path().join("rule.md"),
+        submission
+            .documentation
+            .source
+            .as_deref()
+            .unwrap_or_default(),
+    )?;
     if submission.tests.is_some() {
         fs::write(
             temp.path().join("tests.json"),
@@ -2051,7 +2143,7 @@ fn review(options: &Value) -> Result<Value> {
         .filter(|f| f["finding_id"] == id)
         .collect::<Vec<_>>();
     if findings.len() != 1 {
-        bail!("finding is absent, waived, or ambiguous; run check again");
+        bail!("finding is absent or ambiguous; run check again");
     }
     let finding = findings[0];
     let workspace = discovery::discover(options)?;
@@ -2112,7 +2204,6 @@ fn inspect(options: &Value) -> Result<Value> {
         .into_iter()
         .flatten()
         .chain(checked["reviewed"].as_array().into_iter().flatten())
-        .chain(checked["suppressed"].as_array().into_iter().flatten())
         .filter(|finding| finding["finding_id"] == id)
         .collect::<Vec<_>>();
     if findings.len() > 1 {

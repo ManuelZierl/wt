@@ -3,6 +3,7 @@ name = "wt-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -12,8 +13,25 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 rhai = { version = "=1.26.1", features = ["internals", "sync"] }
-tree-sitter = "=0.24.7"
-tree-sitter-typescript = "=0.23.2"
+ast-grep-core = "=0.45.3"
+ast-grep-language = { version = "=0.45.3", default-features = false }
+# Pinned exactly, alongside the same crates as optional ast-grep-language
+# dependencies, so the resolved grammar version (part of ast.v1 runtime
+# semantics; see `ast_match::AstLanguage::grammar_version`) is deterministic.
+tree-sitter-python = { version = "=0.25.0", optional = true }
+tree-sitter-javascript = { version = "=0.25.0", optional = true }
+tree-sitter-typescript = { version = "=0.23.2", optional = true }
+tree-sitter-rust = { version = "=0.24.2", optional = true }
+
+[features]
+default = ["lang-python", "lang-javascript", "lang-typescript", "lang-rust"]
+# Each feature enables one ast.v1 grammar. "lang-typescript" covers both the
+# `typescript` and `tsx` WRL1 language names (one tree-sitter-typescript crate
+# provides both grammars).
+lang-python = ["ast-grep-language/tree-sitter-python", "dep:tree-sitter-python"]
+lang-javascript = ["ast-grep-language/tree-sitter-javascript", "dep:tree-sitter-javascript"]
+lang-typescript = ["ast-grep-language/tree-sitter-typescript", "dep:tree-sitter-typescript"]
+lang-rust = ["ast-grep-language/tree-sitter-rust", "dep:tree-sitter-rust"]
 
 [dev-dependencies]
 serde_json.workspace = true

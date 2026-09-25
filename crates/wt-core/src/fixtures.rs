@@ -59,8 +59,11 @@ impl TestSuite {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != 2 {
-            bail!("test suite schema_version must be 2")
+        if self.schema_version != crate::CONTRACT_VERSION {
+            bail!(
+                "test suite schema_version must be {}",
+                crate::CONTRACT_VERSION
+            )
         }
         let mut names = std::collections::HashSet::new();
         for case in &self.cases {
