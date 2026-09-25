@@ -12,18 +12,16 @@ fn request(source: &str) -> WorkerRequest {
         rules: vec![WorkerRule {
             id: "worker-test".to_owned(),
             manifest: serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 1,
                 "id": "worker-test",
                 "title": "worker test",
-                "description": "worker test",
-                "rationale": "worker test",
+                "documentation": {"source": "# Worker test\n\nWorker test.\n"},
                 "mode": "advisory",
                 "severity": "warning",
                 "execution": "file",
                 "scope": {"include": ["**/*"]},
                 "patterns": {"bad": "bad"},
                 "diagnostics": {"hit": {"kind": "violation", "message": "bad", "help": "fix"}},
-                "limitations": [],
                 "code": {"language": "wt-rule-1", "capabilities": ["text.v1"]}
             }),
             source: "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }".to_owned(),
@@ -122,7 +120,11 @@ fn killed_worker_slot_recovers_on_next_request() {
     let script = directory.path().join("worker.sh");
     std::fs::write(
         &script,
-        "#!/bin/sh\nstate=\"$0.state\"\ncount=0\nif test -f \"$state\"; then count=$(cat \"$state\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$state\"\nwhile IFS= read -r request; do\n  if test \"$count\" -eq 1; then sleep 3; else printf '%s\\n' '{\"results\":[],\"stats\":{}}'; fi\ndone\n",
+        // Persist the invocation count in the state file with the fewest
+        // possible forks (no `cat`) before ever blocking, so a heavily
+        // loaded test machine still records "this is the first launch"
+        // before the watchdog can kill this process.
+        "#!/bin/sh\nstate=\"$0.state\"\ncount=0\nif test -f \"$state\"; then read -r count < \"$state\"; fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$state\"\nwhile IFS= read -r request; do\n  if test \"$count\" -eq 1; then sleep 3; else printf '%s\\n' '{\"results\":[],\"stats\":{}}'; fi\ndone\n",
     )
     .unwrap();
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
