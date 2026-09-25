@@ -625,7 +625,7 @@ A held-out challenge or independent reviewer should attack the recognition claim
 
 Prefer preserving a previously misclassified input and correcting its expectation with a recorded reason, then adding a stronger independent example. Do not replace the input merely because it no longer fits the detector. Wrong expectations are correctable; convergence is not the permanent preservation of earlier mistakes.
 
-Update previews and VCS review retain the prior package digest and a structured change summary. Direct file editing remains supported, but protected acceptance must review these changes. Append-only occurrence history is a separate requirement; this revision does not add another mandatory rule-history database.
+Update previews and VCS review retain the prior package digest and a structured change summary. Direct file editing remains supported, but protected acceptance must review these changes. Append-only occurrence history is a separate requirement; wt does not add another mandatory rule-history database.
 
 ### 7.6 Application verification is a separate layer
 

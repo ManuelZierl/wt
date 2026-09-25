@@ -35,7 +35,7 @@
         "files": [
           {
             "path": "app/views.py",
-            "content": "def process(request):\n    users = User.objects.all()\n    for user in users:\n        profile = user.objects.filter(owner=user)\n        send(profile)\n"
+            "content": "def process(request):\n    users = User.objects.all()\n    for user in users:\n        profile = Profile.objects.filter(owner=user)\n        send(profile)\n"
           }
         ],
         "expect": [
@@ -61,7 +61,7 @@
         "files": [
           {
             "path": "app/views.py",
-            "content": "def process(users):\n    for user in users:\n        # user.objects.filter(id=1) would be an N+1 query\n        note = \"user.objects.filter(id=1)\"\n        send(user, note)\n"
+            "content": "def process(users):\n    for user in users:\n        # Profile.objects.filter(user=user) would be an N+1 query\n        note = \"Profile.objects.filter(user=user)\"\n        send(user, note)\n"
           }
         ],
         "expect": []

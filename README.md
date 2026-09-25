@@ -17,7 +17,7 @@ A teammate's change adds a real instance of it:
 cat > app/tasks.py <<'PY'
 def notify_active_users(users):
     for user in users:
-        profile = user.objects.get_profile()
+        profile = Profile.objects.get(user=user)
         send_email(profile)
 PY
 wt check --format json | jq '{status, diagnostics: [.diagnostics[] | {path, code, kind, message}]}'
@@ -60,7 +60,7 @@ cat > app/views.py <<'PY'
 def sync_status(orders):
     for order in orders:
         # Cached per request; batching adds complexity we don't need here.
-        status = order.objects.get_status()
+        status = OrderStatus.objects.get(order=order)
         record(order, status)
 PY
 FINDING_ID=$(wt check --format json | jq -r '.diagnostics[0].finding_id')
