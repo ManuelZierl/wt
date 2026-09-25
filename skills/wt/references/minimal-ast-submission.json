@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "id": "no-eval-call",
+  "title": "No eval() call in Python",
+  "mode": "enforced",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {
+    "include": [
+      "**/*.py"
+    ]
+  },
+  "diagnostics": {
+    "eval-call": {
+      "kind": "violation",
+      "message": "This Python file calls eval().",
+      "help": "Replace eval() with an explicit parser (e.g. ast.literal_eval) or document why dynamic evaluation is required."
+    }
+  },
+  "code": {
+    "language": "wt-rule-1",
+    "capabilities": [
+      "ast.v1"
+    ],
+    "source": "for m in file.ast_match(\"python\", \"eval($$$ARGS)\") {\n    emit(m.span, \"eval-call\");\n}"
+  },
+  "tests": {
+    "schema_version": 1,
+    "cases": [
+      {
+        "name": "reports-eval-call",
+        "files": [
+          {
+            "path": "app.py",
+            "content": "def run(expr):\n    return eval(expr)\n"
+          }
+        ],
+        "expect": [
+          {
+            "path": "app.py",
+            "code": "eval-call",
+            "kind": "violation"
+          }
+        ]
+      },
+      {
+        "name": "accepts-unrelated-call",
+        "files": [
+          {
+            "path": "app.py",
+            "content": "def run(expr):\n    # eval(expr) would be unsafe here\n    return safe_eval(expr)\n"
+          }
+        ],
+        "expect": []
+      }
+    ]
+  },
+  "documentation": {
+    "source": "# No eval() call in Python\n\n## Description\n\nReports a structural `eval(...)` call anywhere in a Python file, via `ast.v1`.\n\n## Rationale\n\n`eval()` on unsanitized input is a common injection vector; a structural match finds a real call and does not fire on the text `eval(` inside a string or comment.\n\n## Limitations\n\n- Only matches a direct `eval(...)` call; an aliased or indirectly obtained reference to `eval` is not recognized.\n- Does not evaluate whether the argument is actually attacker-controlled.\n"
+  }
+}

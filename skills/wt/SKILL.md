@@ -5,141 +5,51 @@ description: Use when creating, inspecting, validating, testing, checking, updat
 
 # Watchtower (WT)
 
-Use WT for deterministic, local repository knowledge. WT is not an LLM reviewer: it does not call a model, infer a new rule, or decide whether a convention is correct. The agent authors and reviews the rule; WT validates and executes it.
+WT is deterministic, local repository knowledge, not an LLM reviewer: it never calls a model or decides whether a convention is correct. The agent authors and reviews the rule; WT validates and executes it. `watchtower` is the alternate executable name. Run `wt capabilities --format json` before authoring and verify this skill against its reported schema/guide digests; if neither `wt` nor `watchtower` is installed, report that instead of attempting checks.
 
-## Contract First
+## Choose protection, then author
 
-Run `wt capabilities --format json` and `wt guide author` against the installed executable before authoring. Verify the reported schema, protocol and guide digests match the binary you intend to use. `watchtower` is the alternate executable name, useful where `wt` names Windows Terminal. If neither executable is installed, report that prerequisite before attempting checks.
+Prefer an existing linter, regression test, type restriction, or API redesign when it preserves the lesson more reliably — a WT rule is not required for every fix. A `violation` is a prohibited source form; a `review` is a form worth a human's judgment, and an acceptable occurrence of it is still a raw-positive finding, not a reason to narrow the detector. Use `text.v1` (`rx::find_all`, path globs) for text/regex patterns, and add `ast.v1` (`file.ast_match(language, pattern)`, `matched.node("NAME")`) for a structural shape — a call, a loop body, an element — so formatting and string/comment text cannot cause false matches. `wt guide language` has the full API and language list; combine both freely.
 
-This skill is portable: the repository being checked need not contain WT's own sources. Use the installed `wt guide language` and installed command's schemas. When a WT source checkout is available, its `docs/cli.md`, `docs/runtime-configuration.md`, and `watchtower-spec-v3.md` provide additional detail. Verify a capability against the installed executable before relying on it; this skill may describe a newer version than the binary.
+## Author, validate, test, check
 
-## Inspect Before Editing
-
-Use qualified IDs (`local/name` or `global/name`) when possible. An unqualified ID must resolve uniquely.
-
-```sh
-wt config --format json
-wt list --format json
-wt show local/rule-id --format json
-wt validate local/rule-id --format json
-wt schema submission
-wt schema tests
-```
-
-`config` shows configured and invocation-effective values and origins. `list` shows declared/effective modes, scope, test availability, and digests. `show` returns the self-contained rule at `data.rule` with its same-read package hash at `data.digest`. `plan` inspects the compiled plan without scanning application source:
-
-```sh
-wt plan --rule local/rule-id --format json
-```
-
-Use `--no-global` only when the intended policy is local-only. Otherwise the default combines global and local rules.
-
-Before adding many new rules, or when a check has become noisy, run `wt stats --format json` to see which existing rules are earning their place: it reruns a check with the same scope and flags as `wt check` and reports each rule's mode, severity, raw findings, review decisions by outcome, and a derived signal (`dead`, `noisy`, `useful`, `active`, `disabled`, or `unknown` when the underlying check is incomplete). See `wt guide stats` for the exact signal definitions.
-
-## Choose Protection, Then Author
-
-Use an existing linter, behavioral regression test, type restriction, or API redesign when it preserves the lesson more reliably than a WT detector. A detector need not be invented for every fix. When WT is useful, distinguish a source-level recognition claim from the contextual question the reviewer must answer. Acceptable occurrences of a deliberate review pattern stay raw-positive.
-
-Prefer a small, documented `text.v1` WRL1 detector. `check.wt` is a top-level statement body with an implicit read-only `file`; it is not `fn check(file)` and it is not arbitrary Rhai. Rhai is only the current backend for the restricted `wt-rule-1` contract.
-
-`text.v1` supplies the text, regex, path, and repository APIs. Use spans from the original source (`matched.span`, `line.span`, or `file.span`). Request `ast.v1` when the shape you care about is structural (a call, a loop body, an element) rather than textual; it matches python, javascript, typescript, tsx, or rust via `file.ast_match(language, pattern)`, and combines with `text.v1` freely. Never use I/O, environment, network, process, clock, random, dynamic evaluation, imports, or unregistered calls.
-
-A new submission uses `schema_version: 3`, a stable ID, title, severity, a nonempty scope, diagnostics, `documentation.source` containing the Markdown contract/rationale/limitations/evidence, and:
-
-```json
-"code": {
-  "language": "wt-rule-1",
-  "capabilities": ["text.v1"],
-  "source": "..."
-}
-```
-
-Start from the complete runnable example in [`references/minimal-submission.json`](references/minimal-submission.json). It intentionally has a text-only detector, a nonempty positive fixture, and a nonempty negative fixture.
-
-Keep the rule's limitation honest. A `violation` identifies a prohibited form; a `review` identifies a relevant form the detector cannot classify. A review is not permission to call uncertainty a confirmed bug.
-
-## Validate, Create, Test, Check
-
-`new` already validates, formats and executes supplied fixtures. For an installed rule, use `wt check --submission PATH` to scan a self-contained candidate without installing it. `new` accepts exactly one source: positional JSON, `--stdin`, or `--file`.
-
-```sh
-wt check --submission submission.json --format json
-wt new --stdin --format json < submission.json
+```bash
+echo "This note is complete." > notes.txt
+wt new --stdin --format json < references/minimal-submission.json
+wt check --submission references/minimal-submission.json --format json
 wt check --format json
 ```
 
-`wt test` runs all discovered fixture suites when no ID is supplied. `wt check` runs all enabled rules and all eligible repository files when no path or rule filter is supplied. Inspect JSON, not just the exit code: require `complete: true`, no `errors`, no relevant `gaps`, and `scope.partial: false` for a full check. A complete check with blocking diagnostics exits `1`; invalid configuration, execution failures, and analysis gaps exit `2`.
+Start from [`references/minimal-submission.json`](references/minimal-submission.json) (`text.v1`) or [`references/minimal-ast-submission.json`](references/minimal-ast-submission.json) (`ast.v1`); each has a positive and a negative fixture, required for an enforced rule. Inspect JSON, not just the exit code: `complete: true`, no `errors`, no relevant `gaps`. Exit `1` is blocking findings; exit `2` is invalid input, a runtime failure, or an analysis gap. `wt guide author` has the schema, modes, coverage, and `--expect-hash` update details.
 
-Every expected fixture diagnostic must match; extra findings fail the case. Keep the original regression, accepted alternatives, meaningful edge cases, and false-positive counterexamples. Do not replace a positive with an empty or no-op negative: enforced rules require at least one expected finding and one applicable nonempty valid input with no findings.
+## Rule hygiene: `wt stats`
 
-Use `--optimizer off --no-cache` for the unshared correctness reference path when comparing execution behavior. Add `--stats` to inspect measured work. Keep operational counters separate when comparing the stable findings and coverage of reference, optimized, cached, and parallel runs.
+Before adding many rules, or when a check gets noisy, run `wt stats --format json`: it reruns a check and reports each rule's derived signal — `dead`, `noisy`, `useful`, `active`, `disabled`, or `unknown` (incomplete check). `wt guide stats` has exact definitions.
 
-## Modes, Severity, and Coverage
+## Recording a review decision
 
-- `advisory`: executes, but findings do not block unless `--strict` is used.
-- `enforced`: executes and findings block.
-- `disabled`: does not execute and remains visible in inspection.
-- `severity` (`error`, `warning`, `info`) labels importance; it does not determine blocking.
-- `review` diagnostics block under enforced mode just like violations.
-- Runtime or fixture failures and analysis gaps are incomplete results, not no-match results.
+A retained `TODO` trips the rule above and blocks:
 
-`--changed`, `--rule`, candidate previews and narrowed paths are partial coverage. `coverage.expectations` require each selected enabled and applicable qualified rule to complete the declared minimum number of eligible files in a full check. `--allow-empty` never bypasses an expectation. `--include-ignored` changes only Git-ignore filtering. `--show-reviewed` expands human output.
-
-## Update Safely
-
-Use the JSON `show` response's `data.rule` field as the self-contained submission, retaining all existing tests and fixture content. Do not submit the surrounding command envelope. Edit the submission and use `data.digest` from that same `show` response to preview and then update atomically:
-
-```sh
-wt list --format json
-wt update local/rule-id --stdin --expect-hash sha256:... --preview --format json < updated-submission.json
-wt update local/rule-id --stdin --expect-hash sha256:... --format json < updated-submission.json
+<!-- docs-test: exit=1 -->
+```bash
+echo "TODO: revisit before ship" > notes.txt
+wt check --format json
 ```
 
-The submission ID must stay the same. A stale hash must fail rather than overwrite a concurrent change. Test-case removal or replacement requires both `--allow-test-removal` and a nonempty `--reason`; prefer retaining fixtures instead.
+If it's deliberate, record why instead of deleting the check:
 
-Change mode explicitly and with a reason. Moving to `enforced` validates and runs the required positive and nonempty negative fixtures:
-
-```sh
-wt set-mode local/rule-id enforced --reason "Reviewed regression and counterexample" --format json
+```bash
+FINDING_ID=$(wt check --format json | jq -r '.diagnostics[0].finding_id')
+EVIDENCE=$(wt check --format json | jq -r '.diagnostics[0].evidence_digest')
+echo "Documented as intentional during this migration." > rationale.md
+wt review "$FINDING_ID" --decision accepted-risk --expect-evidence "$EVIDENCE" --reason-file rationale.md
 ```
 
-## Trusted CI
+One decision per occurrence, bound to the reviewed evidence; it reopens when the owning file, rule, or a watched file changes. `acceptable` (only for `review` findings) never silences a `violation` — `accepted-risk` above is the explicit, authorized way to keep one. `wt inspect FINDING_ID` shows why a decision went stale. `wt guide review` has the full contract.
 
-The final CI policy and invocation must be outside the editing agent's control. CI should protect the approved rule/configuration files, use the intended full-scope command, and fail closed on incomplete results. Keep rule packages and local policy in version control; treat caches as derived data. A model may help author or review a rule externally, but WT itself must remain deterministic and model-free.
+## Rules for agents
 
-```sh
-wt check --no-global --no-host-ignores --no-cache --format json
-```
+- Never weaken a rule's pattern/scope, remove a fixture, or bulk-accept findings just to make a check pass. Fix the detector when it recognizes the wrong pattern; record a review decision for a correctly recognized acceptable occurrence.
+- Never disable a rule to silence it; change its mode explicitly with `wt set-mode ID ... --reason TEXT`. The final CI invocation, `.wt/` policy, and checker binary need a trusted boundary the editing agent does not control.
 
-Report the command, rule IDs, fixture outcome, full/partial coverage, findings, and analysis failures. Do not disable a rule, weaken its scope, or remove examples merely to make a check pass. A detector-recognition error belongs in the detector and fixtures. An acceptable occurrence of an intended review pattern belongs in an explicit evidence-bound occurrence review; do not narrow a detector just to remove it. An intentionally accepted violation requires separately justified accepted-risk authorization.
-
-## Readable Rules And Occurrence Decisions
-
-`new` and `update` automatically format `check.wt` and store long-form prose only
-in `rule.md`. Use `wt fmt --check` for existing local scripts. `wt check` never
-reformats source.
-
-A `review` finding means **inspect this pattern**, not **this is a proven bug**.
-An acceptable occurrence is still a raw positive. Keep that detector fixture.
-After actual contextual review, record one decision with
-`wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file rationale.md` using the
-IDs from the reviewed check. The command rejects stale evidence. Never bulk-accept
-findings merely to pass a check. `confirmed-issue` stays actionable; `accepted-risk`
-is a different, explicitly authorized decision, not a synonym for acceptable code.
-
-`wt inspect FINDING_ID --format json` re-evaluates the current raw occurrence,
-stored rationale, evidence digest, and specific stale reasons.
-`wt reviews [FINDING_ID] --format json` exposes stored records, labeled not evaluated.
-A replacement requires `--expect-hash` and appends history. Changed owning files,
-repository-rule input sets, rule contracts, runtime semantics and explicitly
-watched files reopen the decision. Copies do not inherit acceptance. Missing
-matches are not automatically fixed. Summary results contain every
-actionable diagnostic and errors, plus accurate partition counts. Use
-`wt check --detail full --format json` for `reviewed`, `files`, and
-`review_records`; absence of these arrays in the summary means omitted inventory,
-not zero occurrences.
-
-See `wt guide review` and `wt schema review` in an installed build. Every
-contract wt accepts (rule/submission, configuration, review, fixture, and the
-result protocol) is at version 1; wt rejects any other version with a clear
-error.
+See `wt guide author|review|language|stats` for detail.
