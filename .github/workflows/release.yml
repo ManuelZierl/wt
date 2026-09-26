@@ -26,6 +26,8 @@ jobs:
         run: |
           git fetch origin main --quiet
           bash scripts/verify-release-tag.sh "${{ github.ref_name }}" origin/main
+      - name: Release notes present in CHANGELOG.md
+        run: bash scripts/release-notes.sh "${{ github.ref_name }}"
 
   ci:
     name: Full CI suite
@@ -77,10 +79,12 @@ jobs:
         with:
           name: wt-linux-x86_64
           path: dist
+      - name: Extract release notes
+        run: bash scripts/release-notes.sh "${{ github.ref_name }}" > "${{ runner.temp }}/release-notes.md"
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             dist/wt-linux-x86_64.tar.gz
             dist/wt-linux-x86_64.tar.gz.sha256
