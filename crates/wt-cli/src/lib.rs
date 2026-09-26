@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+mod text;
+
 const MAX_JSON_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -812,6 +814,20 @@ fn print_json(value: &Value) {
     }
 }
 
+/// Whether ANSI color is enabled for this invocation: `always`/`never`
+/// force it; `auto` (the default) enables it only on a TTY, and a non-empty
+/// `NO_COLOR` (https://no-color.org) disables it even then.
+fn color_enabled(color: &ColorMode) -> bool {
+    match color {
+        ColorMode::Always => true,
+        ColorMode::Never => false,
+        ColorMode::Auto => {
+            std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+        }
+    }
+}
+
 fn print_text(value: &Value, color: &ColorMode, display: bool) {
     if let Some(error) = value
         .get("error")
@@ -821,186 +837,27 @@ fn print_text(value: &Value, color: &ColorMode, display: bool) {
         println!("error: {error}");
         return;
     }
-    if value["command"] == "guide" {
-        if let Some(text) = value["data"]["text"]
-            .as_str()
-            .or_else(|| value["text"].as_str())
-        {
-            println!("{text}");
-            return;
-        }
-    }
-    if value.get("command").and_then(Value::as_str) == Some("stats") {
-        let data = &value["data"];
-        for rule in data["rules"].as_array().into_iter().flatten() {
-            let signal = rule["signal"].as_str().unwrap_or("unknown");
-            let label = style_signal(signal, color);
-            let decisions = &rule["review_decisions"];
-            println!(
-                "{:<9} {} [{}, {}]",
-                label,
-                rule["id"].as_str().unwrap_or("<unknown>"),
-                rule["mode"].as_str().unwrap_or("?"),
-                rule["severity"].as_str().unwrap_or("?"),
-            );
-            println!(
-                "  raw={} acceptable={} confirmed_issue={} accepted_risk={} needs_review={} stale={} scoped_files={}",
-                rule["raw_findings"]
-                    .as_u64()
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "?".to_owned()),
-                decisions["acceptable"].as_u64().unwrap_or(0),
-                decisions["confirmed_issue"].as_u64().unwrap_or(0),
-                decisions["accepted_risk"].as_u64().unwrap_or(0),
-                decisions["needs_review"].as_u64().unwrap_or(0),
-                rule["stale_decisions"]
-                    .as_u64()
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "?".to_owned()),
-                rule["scoped_files"]
-                    .as_u64()
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "?".to_owned()),
-            );
-            let unmatched = rule["unmatched_include"].as_array().into_iter().flatten();
-            let unmatched = unmatched.filter_map(Value::as_str).collect::<Vec<_>>();
-            if !unmatched.is_empty() {
-                println!("  unmatched include glob(s): {}", unmatched.join(", "));
+    let color = color_enabled(color);
+    match value.get("command").and_then(Value::as_str) {
+        Some("guide") => {
+            if let Some(text) = value["data"]["text"]
+                .as_str()
+                .or_else(|| value["text"].as_str())
+            {
+                println!("{text}");
             }
         }
-        let signals = &data["signals"];
-        println!(
-            "{} useful, {} watch, {} quiet, {} noisy, {} active, {} dead, {} disabled, {} unknown; {}.",
-            signals["useful"].as_u64().unwrap_or(0),
-            signals["watch"].as_u64().unwrap_or(0),
-            signals["quiet"].as_u64().unwrap_or(0),
-            signals["noisy"].as_u64().unwrap_or(0),
-            signals["active"].as_u64().unwrap_or(0),
-            signals["dead"].as_u64().unwrap_or(0),
-            signals["disabled"].as_u64().unwrap_or(0),
-            signals["unknown"].as_u64().unwrap_or(0),
-            if data["complete"] == true {
-                "analysis complete"
-            } else {
-                "analysis incomplete"
-            }
-        );
-        return;
-    }
-    if value.get("command").and_then(Value::as_str) == Some("check") {
-        if let Some(diagnostics) = value.get("diagnostics").and_then(Value::as_array) {
-            for diagnostic in diagnostics {
-                let label = if diagnostic["blocking"] == true {
-                    "BLOCKING"
-                } else {
-                    "ADVISORY"
-                };
-                let label = style_label(label, color);
-                println!(
-                    "{}:{}:{} {} {} {} [{}]",
-                    diagnostic["path"].as_str().unwrap_or("<unknown>"),
-                    diagnostic["start_line"].as_u64().unwrap_or(0),
-                    diagnostic["start_column"].as_u64().unwrap_or(0),
-                    label,
-                    diagnostic["severity"].as_str().unwrap_or("unknown"),
-                    diagnostic["rule_id"].as_str().unwrap_or("<unknown>"),
-                    diagnostic["kind"].as_str().unwrap_or("unknown")
-                );
-                if let Some(message) = diagnostic["message"].as_str() {
-                    println!("  {message}");
-                }
-                if let Some(id) = diagnostic["finding_id"].as_str() {
-                    println!("  finding: {id}");
-                    println!(
-                        "  evidence: {}",
-                        diagnostic["evidence_digest"].as_str().unwrap_or_default()
-                    );
-                }
-                if diagnostic["review_state"]["validity"] == "stale" {
-                    println!(
-                        "  review: STALE — {}",
-                        diagnostic["review_state"]["reasons"]
-                            .as_array()
-                            .map(|reasons| reasons
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", "))
-                            .unwrap_or_default()
-                    );
-                }
-                if let Some(help) = diagnostic["help"].as_str() {
-                    println!("  help: {help}");
-                }
+        Some("stats") => print!("{}", text::render_stats(value, color)),
+        Some("check") => print!("{}", text::render_check(value, color, display)),
+        Some("reviews") => print!("{}", text::render_reviews(value)),
+        Some("inspect") => print!("{}", text::render_inspect(value)),
+        Some("review") => print!("{}", text::render_review(value)),
+        _ => {
+            if let Ok(text) = serde_json::to_string_pretty(value) {
+                println!("{text}");
             }
         }
-        if let Some(errors) = value.get("errors").and_then(Value::as_array) {
-            for error in errors {
-                println!("analysis error: {}", error);
-            }
-        }
-        if display {
-            for finding in value["reviewed"].as_array().into_iter().flatten() {
-                println!(
-                    "REVIEWED {}:{} {}",
-                    finding["path"].as_str().unwrap_or("<unknown>"),
-                    finding["start_line"],
-                    finding["rule_id"].as_str().unwrap_or("<unknown>")
-                );
-            }
-        }
-        let summary = &value["summary"];
-        if let Some(count) = summary["reviewed_occurrences"].as_u64() {
-            println!("{count} occurrence(s) covered by current review decisions.");
-        }
-        println!(
-            "{} blocking diagnostic(s); {} advisory diagnostic(s); {} file(s) checked; {}.",
-            summary["blocking_diagnostics"].as_u64().unwrap_or(0),
-            summary["advisory_diagnostics"].as_u64().unwrap_or(0),
-            summary["checked_files"].as_u64().unwrap_or(0),
-            if value["complete"] == true {
-                "analysis complete"
-            } else {
-                "analysis incomplete"
-            }
-        );
-        return;
     }
-    if let Ok(text) = serde_json::to_string_pretty(value) {
-        println!("{text}");
-    }
-}
-
-fn style_label(label: &str, color: &ColorMode) -> String {
-    let enabled = match color {
-        ColorMode::Always => true,
-        ColorMode::Never => false,
-        ColorMode::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
-    };
-    if !enabled {
-        return label.to_owned();
-    }
-    let code = if label == "BLOCKING" { "31" } else { "33" };
-    format!("\u{1b}[{code}m{label}\u{1b}[0m")
-}
-
-fn style_signal(signal: &str, color: &ColorMode) -> String {
-    let label = signal.to_uppercase();
-    let enabled = match color {
-        ColorMode::Always => true,
-        ColorMode::Never => false,
-        ColorMode::Auto => std::io::IsTerminal::is_terminal(&std::io::stdout()),
-    };
-    if !enabled {
-        return label;
-    }
-    let code = match signal {
-        "dead" | "noisy" => "31",
-        "unknown" => "33",
-        "useful" | "watch" | "quiet" => "32",
-        _ => "0",
-    };
-    format!("\u{1b}[{code}m{label}\u{1b}[0m")
 }
 
 fn insert_if_true(object: &mut Map<String, Value>, key: &str, value: bool) {

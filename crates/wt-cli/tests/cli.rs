@@ -155,6 +155,9 @@ fn semantic_check_result(value: &Value) -> Value {
     object.remove("stats");
     object.remove("effective_policy");
     object.remove("policy_digest");
+    if let Some(summary) = object.get_mut("summary").and_then(Value::as_object_mut) {
+        summary.remove("elapsed_ms");
+    }
     result
 }
 
@@ -297,9 +300,9 @@ fn enforced_findings_exit_one_and_text_has_actionable_labels() {
     );
     assert_eq!(check.status.code(), Some(1));
     let text = String::from_utf8(check.stdout).unwrap();
-    assert!(text.contains("BLOCKING"));
-    assert!(text.contains("help: review it"));
-    assert!(text.contains("1 blocking diagnostic"));
+    assert!(text.contains("error[local/blocking-rule]"));
+    assert!(text.contains("= help: review it"));
+    assert!(text.contains("1 blocking"));
 }
 
 #[test]
