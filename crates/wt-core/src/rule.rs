@@ -104,6 +104,12 @@ pub struct Manifest {
     pub severity: String,
     #[serde(default = "default_execution")]
     pub execution: String,
+    /// A rule's purpose: `detect` (default) finds occurrences to triage, while
+    /// `watch` forces re-review whenever matched code changes (findings and
+    /// acceptances are the expected steady state, not noise). Omitted on disk
+    /// when unset so existing rules and their package digests are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     pub scope: Scope,
     #[serde(default)]
     pub patterns: BTreeMap<String, Pattern>,
@@ -127,6 +133,8 @@ pub struct Submission {
     pub severity: String,
     #[serde(default = "default_execution")]
     pub execution: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     pub scope: Scope,
     #[serde(default)]
     pub patterns: BTreeMap<String, Pattern>,
@@ -157,6 +165,11 @@ pub fn default_mode() -> String {
 
 pub fn default_execution() -> String {
     "file".to_owned()
+}
+
+/// A rule's declared intent, defaulting to `detect` when unset on disk.
+pub fn effective_intent(manifest: &Manifest) -> &str {
+    manifest.intent.as_deref().unwrap_or("detect")
 }
 
 pub fn valid_rule_id(id: &str) -> bool {
@@ -193,6 +206,7 @@ pub fn validate_submission(submission: &Submission) -> Result<()> {
             mode: &submission.mode,
             severity: &submission.severity,
             execution: &submission.execution,
+            intent: submission.intent.as_deref(),
             scope: &submission.scope,
             patterns: &submission.patterns,
             diagnostics: &submission.diagnostics,
@@ -235,6 +249,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<()> {
             mode: &manifest.mode,
             severity: &manifest.severity,
             execution: &manifest.execution,
+            intent: manifest.intent.as_deref(),
             scope: &manifest.scope,
             patterns: &manifest.patterns,
             diagnostics: &manifest.diagnostics,
@@ -258,6 +273,7 @@ struct ValidationFields<'a> {
     mode: &'a str,
     severity: &'a str,
     execution: &'a str,
+    intent: Option<&'a str>,
     scope: &'a Scope,
     patterns: &'a BTreeMap<String, Pattern>,
     diagnostics: &'a BTreeMap<String, DiagnosticDefinition>,
@@ -270,6 +286,7 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
         mode,
         severity,
         execution,
+        intent,
         scope,
         patterns,
         diagnostics,
@@ -286,6 +303,11 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     }
     if !matches!(execution, "file" | "repository") {
         bail!("invalid execution mode {execution:?}")
+    }
+    if let Some(intent) = intent {
+        if !matches!(intent, "detect" | "watch") {
+            bail!("invalid rule intent {intent:?}; expected detect or watch")
+        }
     }
     if scope.include.is_empty() {
         bail!("scope.include at /scope/include must contain at least one root-relative glob; add an eligible path pattern")
@@ -551,6 +573,7 @@ pub fn submission_manifest(submission: &Submission) -> (Manifest, TestSuite) {
         mode: submission.mode.clone(),
         severity: submission.severity.clone(),
         execution: submission.execution.clone(),
+        intent: submission.intent.clone(),
         scope: submission.scope.clone(),
         patterns: submission.patterns.clone(),
         diagnostics: submission.diagnostics.clone(),

@@ -972,6 +972,7 @@ mod tests {
             mode: "advisory".to_owned(),
             severity: "warning".to_owned(),
             execution: execution.to_owned(),
+            intent: None,
             scope: Scope {
                 include: vec![include.to_owned()],
                 exclude: Vec::<ScopeExclude>::new(),

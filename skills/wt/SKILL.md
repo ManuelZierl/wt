@@ -24,7 +24,7 @@ Start from [`references/minimal-submission.json`](references/minimal-submission.
 
 ## Rule hygiene: `wt stats`
 
-Before adding many rules, or when a check gets noisy, run `wt stats --format json`: it reruns a check and reports each rule's derived signal — `dead`, `noisy`, `useful`, `active`, `disabled`, or `unknown` (incomplete check). `wt guide stats` has exact definitions.
+Before adding many rules, or when a check gets noisy, run `wt stats --format json`: it reruns a check and reports each rule's derived signal — `useful`, `watch` (`intent: watch`), `quiet`, `noisy`, `active`, `dead` (empty scope), `disabled`, or `unknown`. `wt guide stats` has exact definitions.
 
 ## Recording a review decision
 

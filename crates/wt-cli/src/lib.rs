@@ -844,7 +844,7 @@ fn print_text(value: &Value, color: &ColorMode, display: bool) {
                 rule["severity"].as_str().unwrap_or("?"),
             );
             println!(
-                "  raw={} acceptable={} confirmed_issue={} accepted_risk={} needs_review={} stale={}",
+                "  raw={} acceptable={} confirmed_issue={} accepted_risk={} needs_review={} stale={} scoped_files={}",
                 rule["raw_findings"]
                     .as_u64()
                     .map(|n| n.to_string())
@@ -857,15 +857,26 @@ fn print_text(value: &Value, color: &ColorMode, display: bool) {
                     .as_u64()
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "?".to_owned()),
+                rule["scoped_files"]
+                    .as_u64()
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".to_owned()),
             );
+            let unmatched = rule["unmatched_include"].as_array().into_iter().flatten();
+            let unmatched = unmatched.filter_map(Value::as_str).collect::<Vec<_>>();
+            if !unmatched.is_empty() {
+                println!("  unmatched include glob(s): {}", unmatched.join(", "));
+            }
         }
         let signals = &data["signals"];
         println!(
-            "{} dead, {} noisy, {} active, {} useful, {} disabled, {} unknown; {}.",
-            signals["dead"].as_u64().unwrap_or(0),
+            "{} useful, {} watch, {} quiet, {} noisy, {} active, {} dead, {} disabled, {} unknown; {}.",
+            signals["useful"].as_u64().unwrap_or(0),
+            signals["watch"].as_u64().unwrap_or(0),
+            signals["quiet"].as_u64().unwrap_or(0),
             signals["noisy"].as_u64().unwrap_or(0),
             signals["active"].as_u64().unwrap_or(0),
-            signals["useful"].as_u64().unwrap_or(0),
+            signals["dead"].as_u64().unwrap_or(0),
             signals["disabled"].as_u64().unwrap_or(0),
             signals["unknown"].as_u64().unwrap_or(0),
             if data["complete"] == true {
@@ -986,7 +997,7 @@ fn style_signal(signal: &str, color: &ColorMode) -> String {
     let code = match signal {
         "dead" | "noisy" => "31",
         "unknown" => "33",
-        "useful" => "32",
+        "useful" | "watch" | "quiet" => "32",
         _ => "0",
     };
     format!("\u{1b}[{code}m{label}\u{1b}[0m")

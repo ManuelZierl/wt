@@ -20,10 +20,19 @@ impl Repo {
         dispatch(command, &options).unwrap()
     }
     /// Install an enforced rule whose `pattern` regex decides which
-    /// occurrences it reports over `*.txt` files, using a `review`
-    /// diagnostic so acceptances are legal.
-    fn install(&self, id: &str, pattern: &str) -> Value {
-        let submission = json!({
+    /// occurrences it reports over files matched by `include`, using a
+    /// `review` diagnostic so acceptances are legal. The synthetic fixture
+    /// lives at `fixture.txt`, so every `include` used here must also cover
+    /// that literal path for the enforced-rule fixture gate, independently of
+    /// whether any real file in the repository matches.
+    fn install_scoped(
+        &self,
+        id: &str,
+        pattern: &str,
+        include: &[&str],
+        intent: Option<&str>,
+    ) -> Value {
+        let mut submission = json!({
             "schema_version": 1,
             "id": id,
             "title": id,
@@ -31,7 +40,7 @@ impl Repo {
             "mode": "enforced",
             "severity": "warning",
             "execution": "file",
-            "scope": {"include": ["**/*.txt"]},
+            "scope": {"include": include},
             "patterns": {"needle": pattern},
             "diagnostics": {"hit": {"kind": "review", "message": "Review marker", "help": "Inspect context"}},
             "code": {"language": "wt-rule-1", "capabilities": ["text.v1"],
@@ -41,9 +50,18 @@ impl Repo {
                 {"name": "negative", "files": [{"path": "fixture.txt", "content": "unrelated"}], "expect": []}
             ]}
         });
+        if let Some(intent) = intent {
+            submission["intent"] = json!(intent);
+        }
         let result = self.run("new", json!({"submission": submission}));
         assert_eq!(result["exit_code"], 0, "{result}");
         result
+    }
+    /// Install an enforced rule whose `pattern` regex decides which
+    /// occurrences it reports over `*.txt` files, using a `review`
+    /// diagnostic so acceptances are legal.
+    fn install(&self, id: &str, pattern: &str) -> Value {
+        self.install_scoped(id, pattern, &["**/*.txt"], None)
     }
     fn check(&self) -> Value {
         self.run("check", json!({"no_cache": true, "detail": "full"}))
@@ -72,23 +90,110 @@ impl Repo {
 }
 
 #[test]
-fn a_rule_with_no_findings_and_no_decisions_is_dead() {
+fn a_rule_whose_scope_matches_no_repository_file_is_dead() {
     let repo = Repo::new();
-    repo.install("dead-rule", "zzz-never-matches-zzz");
-    fs::write(repo.root.path().join("source.txt"), "clean text\n").unwrap();
+    // The only path this scope covers is the synthetic fixture path, which
+    // never exists as a real file in the repository root.
+    repo.install_scoped("dead-rule", "bad", &["fixture.txt"], None);
+    fs::write(repo.root.path().join("source.txt"), "bad\n").unwrap();
     let stats = repo.stats();
     assert_eq!(stats["exit_code"], 0, "{stats}");
     assert_eq!(stats["data"]["complete"], true);
     let rule = Repo::rule(&stats, "local/dead-rule");
     assert_eq!(rule["signal"], "dead");
+    assert_eq!(rule["scoped_files"], 0);
+    assert_eq!(rule["raw_findings"], 0);
+    assert_eq!(stats["data"]["signals"]["dead"], 1);
+}
+
+#[test]
+fn an_unmatched_include_glob_is_reported_even_though_the_rule_is_not_dead() {
+    let repo = Repo::new();
+    repo.install_scoped(
+        "partly-unmatched-rule",
+        "zzz-never-matches-zzz",
+        &["**/*.txt", "**/*.nomatch"],
+        None,
+    );
+    fs::write(repo.root.path().join("source.txt"), "clean text\n").unwrap();
+    let stats = repo.stats();
+    let rule = Repo::rule(&stats, "local/partly-unmatched-rule");
+    // Scope matches source.txt, so the rule is not dead...
+    assert_ne!(rule["signal"], "dead");
+    assert_eq!(rule["scoped_files"], 1);
+    // ...but the second glob never matches anything, and that is reported.
+    assert_eq!(rule["unmatched_include"], json!(["**/*.nomatch"]));
+}
+
+#[test]
+fn scope_matches_fixtures_pass_and_no_findings_is_quiet() {
+    let repo = Repo::new();
+    repo.install("quiet-rule", "zzz-never-matches-zzz");
+    fs::write(repo.root.path().join("source.txt"), "clean text\n").unwrap();
+    let stats = repo.stats();
+    assert_eq!(stats["exit_code"], 0, "{stats}");
+    assert_eq!(stats["data"]["complete"], true);
+    let rule = Repo::rule(&stats, "local/quiet-rule");
+    assert_eq!(rule["signal"], "quiet");
     assert_eq!(rule["mode"], "enforced");
     assert_eq!(rule["severity"], "warning");
+    assert_eq!(rule["scoped_files"], 1);
     assert_eq!(rule["raw_findings"], 0);
     assert_eq!(rule["stale_decisions"], 0);
     assert_eq!(rule["review_decisions"]["acceptable"], 0);
     assert_eq!(rule["review_decisions"]["confirmed_issue"], 0);
     assert_eq!(rule["review_decisions"]["accepted_risk"], 0);
-    assert_eq!(stats["data"]["signals"]["dead"], 1);
+    assert_eq!(stats["data"]["signals"]["quiet"], 1);
+}
+
+#[test]
+fn an_intent_watch_rule_with_current_findings_is_watch_not_active() {
+    let repo = Repo::new();
+    repo.install_scoped("watch-rule", "bad", &["**/*.txt"], Some("watch"));
+    fs::write(repo.root.path().join("source.txt"), "bad\n").unwrap();
+    let stats = repo.stats();
+    let rule = Repo::rule(&stats, "local/watch-rule");
+    assert_eq!(rule["intent"], "watch");
+    assert_eq!(rule["raw_findings"], 1);
+    assert_eq!(rule["signal"], "watch");
+    assert_eq!(stats["data"]["signals"]["watch"], 1);
+}
+
+#[test]
+fn a_watch_rule_with_no_findings_is_quiet_not_watch() {
+    let repo = Repo::new();
+    repo.install_scoped(
+        "quiet-watch-rule",
+        "zzz-never-matches-zzz",
+        &["**/*.txt"],
+        Some("watch"),
+    );
+    fs::write(repo.root.path().join("source.txt"), "clean text\n").unwrap();
+    let stats = repo.stats();
+    let rule = Repo::rule(&stats, "local/quiet-watch-rule");
+    assert_eq!(rule["raw_findings"], 0);
+    assert_eq!(rule["signal"], "quiet");
+}
+
+#[test]
+fn an_intent_watch_rule_is_never_noisy_even_when_mostly_accepted() {
+    let repo = Repo::new();
+    repo.install_scoped("watch-noisy-rule", "bad", &["**/*.txt"], Some("watch"));
+    fs::write(repo.root.path().join("a.txt"), "bad\n").unwrap();
+    fs::write(repo.root.path().join("b.txt"), "bad also\n").unwrap();
+    let diagnostics = repo.check()["diagnostics"].as_array().unwrap().clone();
+    assert_eq!(diagnostics.len(), 2);
+    repo.decide(&diagnostics[0], "acceptable");
+    repo.decide(&diagnostics[1], "acceptable");
+    let stats = repo.stats();
+    let rule = Repo::rule(&stats, "local/watch-noisy-rule");
+    // Every decided finding was accepted; the old heuristic would call this
+    // noisy, but a watch rule expects exactly this pattern.
+    assert_eq!(rule["review_decisions"]["acceptable"], 2);
+    assert_eq!(rule["signal"], "watch");
+    assert_ne!(rule["signal"], "noisy");
+    assert_eq!(stats["data"]["signals"]["noisy"], 0);
+    assert_eq!(stats["data"]["signals"]["watch"], 1);
 }
 
 #[test]
@@ -197,7 +302,12 @@ fn a_disabled_rule_is_reported_as_disabled_not_dead() {
 fn problem_signals_are_sorted_first_in_stats_output() {
     let repo = Repo::new();
     repo.install("a-useful-rule", "bad");
-    repo.install("b-dead-rule", "zzz-never-matches-zzz");
+    repo.install_scoped(
+        "b-dead-rule",
+        "zzz-never-matches-zzz",
+        &["fixture.txt"],
+        None,
+    );
     fs::write(repo.root.path().join("source.txt"), "bad\n").unwrap();
     let finding = repo.check()["diagnostics"][0].clone();
     repo.decide(&finding, "confirmed_issue");

@@ -67,6 +67,7 @@ fn package(directory: &Path, include: &str) -> RulePackage {
         mode: "advisory".to_owned(),
         severity: "warning".to_owned(),
         execution: "file".to_owned(),
+        intent: None,
         scope: Scope {
             include: vec![include.to_owned()],
             exclude: vec![ScopeExclude {

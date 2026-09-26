@@ -730,9 +730,12 @@ fn minimal_submission_lifecycle_reports_untested_then_checks_successfully() {
 }
 
 #[test]
-fn stats_reports_a_dead_rule_in_text_and_json() {
+fn stats_reports_a_quiet_rule_in_text_and_json() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();
+    // The rule's scope matches this file, but its pattern never fires on it:
+    // scope matches files, fixtures pass, no findings — a healthy `quiet`
+    // rule, not `dead`.
     std::fs::write(root.path().join("source.txt"), "request(\"other\")\n").unwrap();
     let created = invoke(
         root.path(),
@@ -755,9 +758,104 @@ fn stats_reports_a_dead_rule_in_text_and_json() {
     let rules = result["data"]["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0]["id"], "local/stats-example");
-    assert_eq!(rules[0]["signal"], "dead");
+    assert_eq!(rules[0]["signal"], "quiet");
+    assert_eq!(rules[0]["scoped_files"], 1);
     assert_eq!(rules[0]["raw_findings"], 0);
+    assert_eq!(result["data"]["signals"]["quiet"], 1);
+
+    let text = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache"],
+        None,
+    );
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(rendered.contains("QUIET"));
+    assert!(rendered.contains("local/stats-example"));
+    assert!(rendered.contains("analysis complete"));
+}
+
+#[test]
+fn stats_reports_a_dead_rule_and_an_unmatched_include_glob() {
+    let root = tempdir().unwrap();
+    let global = tempdir().unwrap();
+    std::fs::write(root.path().join("source.txt"), "request(\"other\")\n").unwrap();
+    // This scope only ever covers the synthetic fixture path, which the real
+    // repository never has, so the rule cannot fire here.
+    let dead = json!({
+        "schema_version": 1,
+        "id": "dead-example",
+        "title": "dead-example",
+        "documentation": {"source": "# Dead\n\n## Description\n\nNever applicable here.\n\n## Rationale\n\nTest fixture.\n\n## Limitations\n\nNone.\n"},
+        "mode": "advisory",
+        "severity": "warning",
+        "execution": "file",
+        "scope": {"include": ["fixture.txt"]},
+        "patterns": {"needle": "foo"},
+        "diagnostics": {"hit": {"kind": "violation", "message": "marker found", "help": "review it"}},
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"],
+            "source": "for m in rx::find_all(file, \"needle\") { emit(m.span, \"hit\"); }"},
+        "tests": {"schema_version": 1, "cases": [
+            {"name": "positive", "files": [{"path": "fixture.txt", "content": "foo"}], "expect": [{"path": "fixture.txt", "code": "hit", "kind": "violation"}]},
+            {"name": "negative", "files": [{"path": "fixture.txt", "content": "unrelated"}], "expect": []}
+        ]}
+    })
+    .to_string();
+    // This scope's second glob never matches anything real, even though the
+    // first glob does; that is reported without changing the rule's signal.
+    let partly_unmatched = json!({
+        "schema_version": 1,
+        "id": "partly-unmatched-example",
+        "title": "partly-unmatched-example",
+        "documentation": {"source": "# Partly unmatched\n\n## Description\n\nOne glob never matches.\n\n## Rationale\n\nTest fixture.\n\n## Limitations\n\nNone.\n"},
+        "mode": "advisory",
+        "severity": "warning",
+        "execution": "file",
+        "scope": {"include": ["**/*.txt", "**/*.nomatch"]},
+        "patterns": {"needle": "foo"},
+        "diagnostics": {"hit": {"kind": "violation", "message": "marker found", "help": "review it"}},
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"],
+            "source": "for m in rx::find_all(file, \"needle\") { emit(m.span, \"hit\"); }"},
+        "tests": {"schema_version": 1, "cases": [
+            {"name": "positive", "files": [{"path": "fixture.txt", "content": "foo"}], "expect": [{"path": "fixture.txt", "code": "hit", "kind": "violation"}]},
+            {"name": "negative", "files": [{"path": "fixture.txt", "content": "unrelated"}], "expect": []}
+        ]}
+    })
+    .to_string();
+    for document in [&dead, &partly_unmatched] {
+        let created = invoke(
+            root.path(),
+            global.path(),
+            &["new", "--stdin", "--format", "json"],
+            Some(document),
+        );
+        assert_eq!(created.status.code(), Some(0), "{created:?}");
+    }
+
+    let json = invoke(
+        root.path(),
+        global.path(),
+        &["stats", "--no-global", "--no-cache", "--format", "json"],
+        None,
+    );
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    let result = json_output(&json);
+    assert_eq!(result["data"]["complete"], true);
+    let rules = result["data"]["rules"].as_array().unwrap();
+    let dead_rule = rules
+        .iter()
+        .find(|rule| rule["id"] == "local/dead-example")
+        .unwrap();
+    assert_eq!(dead_rule["signal"], "dead");
+    assert_eq!(dead_rule["scoped_files"], 0);
     assert_eq!(result["data"]["signals"]["dead"], 1);
+    let unmatched_rule = rules
+        .iter()
+        .find(|rule| rule["id"] == "local/partly-unmatched-example")
+        .unwrap();
+    assert_ne!(unmatched_rule["signal"], "dead");
+    assert_eq!(unmatched_rule["unmatched_include"], json!(["**/*.nomatch"]));
 
     let text = invoke(
         root.path(),
@@ -768,6 +866,6 @@ fn stats_reports_a_dead_rule_in_text_and_json() {
     assert_eq!(text.status.code(), Some(0), "{text:?}");
     let rendered = String::from_utf8_lossy(&text.stdout);
     assert!(rendered.contains("DEAD"));
-    assert!(rendered.contains("local/stats-example"));
-    assert!(rendered.contains("analysis complete"));
+    assert!(rendered.contains("local/dead-example"));
+    assert!(rendered.contains("unmatched include glob(s): **/*.nomatch"));
 }

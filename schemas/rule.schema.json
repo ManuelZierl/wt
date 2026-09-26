@@ -12,6 +12,7 @@
     "mode": {"enum": ["advisory", "enforced", "disabled"], "default": "advisory"},
     "severity": {"enum": ["error", "warning", "info"]},
     "execution": {"enum": ["file", "repository"], "default": "file"},
+    "intent": {"enum": ["detect", "watch"], "default": "detect"},
     "scope": {"$ref": "#/$defs/scope"},
     "patterns": {
       "type": "object",

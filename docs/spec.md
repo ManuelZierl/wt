@@ -319,6 +319,7 @@ New and explicitly updated packages use rule schema **1**. The manifest referenc
 | `mode` | Advisory by default; explicit enforced/disabled modes are retained. |
 | `severity` | Error, warning, or info; independent of mode and diagnostic kind. |
 | `execution` | File by default, or explicit repository execution. |
+| `intent` | Optional; `detect` (default, omitted on disk) or `watch` — a `watch` rule exists to force re-review when specific code changes, so findings and repeated acceptances are its expected steady state, not noise (`wt stats` reports it as `watch`, never `noisy`). |
 | `scope` | Nonempty includes; reasoned excludes; optional applicability paths. |
 | `patterns` | Statically declared local aliases for regexes and expanded flags. |
 | `diagnostics` | Nonempty map of codes to `{kind, message, help}`. |
@@ -650,7 +651,7 @@ Common selection options remain `--root`, `--global-dir`, `--no-global` where me
 | `wt check --submission PATH` | Preview one uninstalled self-contained candidate with normal file selection and fixture gates; no persistent package/review changes. |
 | `wt fmt [ID] [--check] [--global]` | Format detector source, or report differences without writes. |
 | `wt plan [--rule ID]` | Inspect guarded queries and sharing decisions without scanning application contents. |
-| `wt stats` | Rerun a check with the same scope/flags as `wt check` and report each rule's mode, severity, raw findings, review decisions by outcome, and a derived `disabled`/`unknown`/`useful`/`dead`/`noisy`/`active` signal; see `wt guide stats`. |
+| `wt stats` | Rerun a check with the same scope/flags as `wt check` and report each rule's mode, severity, intent, in-scope file count, unmatched include globs, raw findings, review decisions by outcome, and a derived `disabled`/`unknown`/`useful`/`dead`/`watch`/`quiet`/`noisy`/`active` signal; see `wt guide stats`. |
 | `wt list` | Identities, origin, declared/effective mode, scope, and fixture availability. |
 | `wt show ID` | Human contract or self-contained JSON export with its same-read package digest. |
 | `wt validate [ID]` / `--file PATH` | Validate package/submission; compact success and actionable failures. |

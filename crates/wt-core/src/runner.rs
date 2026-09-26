@@ -408,6 +408,7 @@ fn update(options: &Value) -> Result<Value> {
             "scope": serde_json::to_value(&package.manifest.scope)? != serde_json::to_value(&candidate.manifest.scope)?,
             "mode": package.manifest.mode != candidate.manifest.mode,
             "execution": package.manifest.execution != candidate.manifest.execution,
+            "intent": package.manifest.intent != candidate.manifest.intent,
             "severity": package.manifest.severity != candidate.manifest.severity,
             "metadata": package.manifest.metadata != candidate.manifest.metadata
         })
@@ -962,13 +963,27 @@ fn check(options: &Value) -> Result<Value> {
 /// already produce. No history is kept; every number is recomputed from the
 /// current repository, rules and stored review records on each run.
 ///
-/// Per rule this reports the mode/severity, the raw findings from a check run
-/// with the same scope and flags as `wt check`, review decisions by outcome,
-/// how many of those decisions are currently stale, and one derived signal:
+/// Per rule this reports the mode/severity/intent, how many files in this
+/// repository are in this rule's scope after the same include/exclude and
+/// ignore handling `wt check` uses (`scoped_files`), any of the rule's own
+/// include globs that individually match none of those files
+/// (`unmatched_include`, informational; e.g. a typo'd extension next to a
+/// glob that does match), the raw findings from a check run with the same
+/// scope and flags as `wt check`, review decisions by outcome, how many of
+/// those decisions are currently stale, and one derived signal, computed in
+/// this priority order:
 /// - `disabled`: the rule does not currently execute.
 /// - `unknown`: the underlying check was incomplete; a signal would be a guess.
 /// - `useful`: at least one occurrence was confirmed as a real issue.
-/// - `dead`: no current findings and no review decisions at all.
+/// - `dead`: the rule's scope matches no file in this repository, so it
+///   cannot fire here (a fixture failure already makes the whole run
+///   incomplete, so a broken rule is reported `unknown`, never `dead`).
+/// - `watch`: an `intent: watch` rule (one whose purpose is to force
+///   re-review whenever specific code changes) has current findings or
+///   decisions; each acceptance is expected to reopen when the watched code
+///   changes, so this is healthy, not noise.
+/// - `quiet`: scope matches files, and there are no current findings and no
+///   pending decisions — a healthy, working rule.
 /// - `noisy`: most decided findings were accepted as acceptable.
 /// - `active`: none of the above; the rule has activity that has not settled
 ///   into a clear pattern yet.
@@ -1001,6 +1016,27 @@ fn stats(options: &Value) -> Result<Value> {
     let workspace = discovery::discover(options)?;
     let requested = requested_rules(options)?;
     let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
+
+    // Files that survived ignore/exclude handling and were actually read as
+    // text, under the same scope and flags as the check above (a superset
+    // across every currently enabled rule's scope, since `check` unions them
+    // before reading any bytes). Each rule's own scope is matched against
+    // this list below, independently of whether that rule's own fixtures
+    // passed: a fixture failure already leaves an error in `checked["errors"]`
+    // and makes `complete` false, so `dead`/`quiet` never need to special-case
+    // it themselves — such a rule is reported `unknown`, not a guess.
+    let eligible_paths = checked["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|file| {
+            matches!(
+                file["status"].as_str(),
+                Some("checked" | "unchanged_dependency")
+            )
+        })
+        .filter_map(|file| file["path"].as_str())
+        .collect::<Vec<_>>();
 
     // A corrupt or inconsistent review store is already surfaced through
     // `checked["errors"]` and `complete == false`; do not let it turn the
@@ -1059,18 +1095,54 @@ fn stats(options: &Value) -> Result<Value> {
         let id = package.qualified_id.clone();
         let mode = effective_mode(&workspace, package);
         let severity = package.manifest.severity.clone();
+        let intent = rule::effective_intent(&package.manifest);
         let raw_findings = raw_by_rule.get(&id).copied().unwrap_or(0);
         let counts = review_by_rule.get(&id).copied().unwrap_or([0; 4]);
         let stale = stale_by_rule.get(&id).copied().unwrap_or(0);
         let decided = counts[0] + counts[1] + counts[2];
+
+        let prepared_scope = PreparedScope::new(&workspace.root, package)?;
+        let scoped_files = eligible_paths
+            .iter()
+            .copied()
+            .filter(|path| prepared_scope.matches(path))
+            .count();
+        let unmatched_include = if prepared_scope.applicable {
+            package
+                .manifest
+                .scope
+                .include
+                .iter()
+                .filter(|glob| {
+                    GlobBuilder::new(glob)
+                        .literal_separator(true)
+                        .build()
+                        .map(|glob| glob.compile_matcher())
+                        .is_ok_and(|matcher| {
+                            !eligible_paths
+                                .iter()
+                                .copied()
+                                .any(|path| matcher.is_match(path))
+                        })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
         let signal = if mode == "disabled" {
             "disabled"
         } else if !complete {
             "unknown"
         } else if counts[1] > 0 {
             "useful"
-        } else if raw_findings == 0 && decided == 0 && counts[3] == 0 {
+        } else if scoped_files == 0 {
             "dead"
+        } else if intent == "watch" && (raw_findings > 0 || decided > 0 || counts[3] > 0) {
+            "watch"
+        } else if raw_findings == 0 && decided == 0 && counts[3] == 0 {
+            "quiet"
         } else if decided > 0 && counts[0] * 2 > decided {
             "noisy"
         } else {
@@ -1080,6 +1152,9 @@ fn stats(options: &Value) -> Result<Value> {
             "id": id,
             "mode": mode,
             "severity": severity,
+            "intent": intent,
+            "scoped_files": scoped_files,
+            "unmatched_include": unmatched_include,
             "raw_findings": if complete { json!(raw_findings) } else { Value::Null },
             "review_decisions": {"acceptable": counts[0], "confirmed_issue": counts[1],
                 "accepted_risk": counts[2], "needs_review": counts[3]},
@@ -1093,7 +1168,9 @@ fn stats(options: &Value) -> Result<Value> {
             .then_with(|| left["id"].as_str().cmp(&right["id"].as_str()))
     });
     let mut signals = Map::new();
-    for signal in ["dead", "noisy", "active", "useful", "disabled", "unknown"] {
+    for signal in [
+        "dead", "noisy", "active", "useful", "watch", "quiet", "disabled", "unknown",
+    ] {
         let count = rules_out
             .iter()
             .filter(|rule| rule["signal"] == signal)
@@ -1116,14 +1193,22 @@ fn stats(options: &Value) -> Result<Value> {
 }
 
 fn signal_rank(signal: &str) -> u8 {
+    // Problems worth fixing sort first (dead scope, noisy thresholds, an
+    // unsettled pattern, a confirmed issue to act on); healthy, working
+    // states (`watch`, `quiet`) sort after them; statuses that cannot be
+    // acted on directly (`unknown` needs the check fixed first, `disabled`
+    // was opted out on purpose) sort last, `unknown` just above `disabled` as
+    // in the original order.
     match signal {
         "dead" => 0,
         "noisy" => 1,
         "active" => 2,
         "useful" => 3,
-        "unknown" => 4,
-        "disabled" => 5,
-        _ => 6,
+        "watch" => 4,
+        "quiet" => 5,
+        "unknown" => 6,
+        "disabled" => 7,
+        _ => 8,
     }
 }
 
@@ -1581,10 +1666,10 @@ fn schema(options: &Value) -> Result<Value> {
     crate::parse_json(schema)
 }
 
-const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings.";
+const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings. Optional intent: watch (default detect) marks a rule whose purpose is forcing re-review whenever specific code changes, not finding new occurrences; findings and repeated acceptances are its expected steady state, and wt stats reports it as watch instead of noisy.";
 const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
 const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and ast.v1 are explicit capabilities. ast.v1 adds file.ast_match(language, pattern) for structural matches, m.node(\"NAME\") for a captured metavariable, and m.ast_match(language, pattern) to search inside a match; a file with any parse error node is an analysis gap, never a silent no-match. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
-const STATS_GUIDE: &str = "wt stats runs a check with the same scope and flags as wt check, then reports per qualified rule: mode, severity, raw findings from that run, stored review decisions by outcome (acceptable, confirmed_issue, accepted_risk, needs_review), and how many of those decisions are currently stale. It keeps no history; every number is recomputed from the current repository, rules and review store. Each rule gets exactly one derived signal, in this priority order: disabled (mode is disabled), unknown (the underlying check was incomplete; never reported as dead), useful (at least one confirmed_issue decision), dead (no current findings and no review decisions at all), noisy (more than half of decided findings were accepted as acceptable), otherwise active. Run it before adding many new rules, or when a check has become noisy.";
+const STATS_GUIDE: &str = "wt stats runs a check with the same scope and flags as wt check, then reports per qualified rule: mode, severity, intent, how many repository files are in scope after the same include/exclude and ignore handling (scoped_files), any of the rule's own include globs that individually match none of them (unmatched_include, informational), raw findings from that run, stored review decisions by outcome (acceptable, confirmed_issue, accepted_risk, needs_review), and how many of those decisions are currently stale. It keeps no history; every number is recomputed from the current repository, rules and review store. Each rule gets exactly one derived signal, in this priority order: disabled (mode is disabled), unknown (the underlying check was incomplete; never reported as dead), useful (at least one confirmed_issue decision), dead (scoped_files is zero; the rule cannot fire here), watch (an intent: watch rule with current findings or decisions), quiet (scope matches files, no current findings, no pending decisions: a healthy, working rule), noisy (more than half of decided findings were accepted as acceptable), otherwise active. Run it before adding many new rules, or when a check has become noisy.";
 fn guide(options: &Value) -> Result<Value> {
     let topic = options
         .get("topic")
