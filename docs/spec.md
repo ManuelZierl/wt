@@ -641,6 +641,8 @@ All commands are non-interactive. Machine use must not require an interactive ed
 
 Common selection options remain `--root`, `--global-dir`, `--no-global` where meaningful, `--format text|json`, and `--color auto|always|never`. Reject irrelevant/conflicting options. JSON stdin is preferred over shell-quoted source strings.
 
+Anywhere a finding ID or evidence digest is accepted (`wt inspect`, `wt review ... --expect-evidence`, `wt reviews`), the shortest-unique hex prefix `wt check` prints for it (at least 8 characters, with or without the `sha256:` marker) is accepted in place of the full 71-character id; a full id keeps working exactly as before. Resolution happens in `wt-core`, against the run's current findings and stored reviews, so it applies identically whether the caller is a human or a JSON-driven agent. An ambiguous or unmatched prefix is a clear `2`-exit error listing the full candidate ids; `--watch PATH=sha256:HASH` file-content digests are a separate namespace and are never shortened or prefix-matched.
+
 ### 8.1 Command surface
 
 | Command | Contract |
@@ -730,21 +732,32 @@ Argument failures use structured JSON when the requested output format/version c
 
 ### 9.1 The normal output is the work queue
 
-A human result should foreground unreviewed/current-open findings and stale acceptances, not repeat every accepted occurrence or internal query node. For example:
+A human result should foreground unreviewed/current-open findings and stale acceptances, not repeat every accepted occurrence or internal query node. Text output uses a `rustc`-style block per actionable finding: an `error`/`warning` label (computed from blocking status, not mode/kind, which remain in JSON and `wt inspect`), a `rule_id`, the message, a `--> path:line:col` pointer, one line of source context before and after the matched span with a caret underneath it, and `= key: value` notes for `status` (`needs review`, `confirmed issue`, or `violation`; a reopened stale decision says why), `help`, the evidence prefix, and the `wt inspect` command to run next. For example:
 
 ```text
-18 raw occurrences: 14 reviewed, 4 actionable.
-  1 unreviewed; 2 previous acceptances are stale; 1 confirmed issue remains open.
-39 eligible files completed. Analysis complete; full selected policy evaluated.
+warning[local/current-cwd-label]: label cwd Current shell directory only at ...
+  --> crates/kea-app/src/app/rendering.rs:377:44
+    |
+376 |     <previous line>
+377 |     <matched line>
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^
+378 |     <next line>
+    |
+    = status: needs review
+    = help: Verify the branch uses ...
+    = evidence: bb2c1904
+    = inspect: wt inspect aa1af802
+
+2 known issues · 0 need review · 0 blocking · 12 accepted · 143 files in 0.2s
 ```
 
-This is an illustrative result, not a measured test. Severity, `review` versus `violation`, advisory versus enforced mode, and computed blocking status must be visually distinct. An advisory error-level finding is not a failed command unless strict mode applies.
+This is an illustrative result, not a measured test. A finding already covered by a current `confirmed_issue` decision is instead a one-line entry in a trailing `Known issues:` section, so it stays visible without burying new findings; `--show-reviewed` (or `--detail full`) adds a similar `Accepted:` section for current `acceptable`/`accepted_risk` decisions, otherwise hidden. The closing summary line's counts and nouns are singular/plural-correct (`1 known issue`, `1 needs review`, `1 file`); an incomplete analysis is reported as a loud, separate `error: analysis incomplete` line first, never folded silently into a clean-looking summary. Severity, `review` versus `violation`, advisory versus enforced mode, and computed blocking status must be visually distinct. An advisory error-level finding is not a failed command unless strict mode applies. Color follows `--color`, a non-empty `NO_COLOR`, and TTY detection; pipes never carry ANSI codes.
 
 An occurrence diagnostic must say what was recognized. A text prefix match cannot assert that an acknowledgement was bypassed; a same-named `.filter()` cannot assert that displayed state changed. The Markdown contract explains how to investigate the remaining question.
 
 ### 9.2 Raw occurrence fields
 
-Each raw occurrence retains qualified rule ID, package digest, diagnostic code/kind, severity, effective mode, original path/byte span, one-based Unicode-scalar display coordinates, source digest, and current message/help. Evidence-bound output additionally carries `finding_id`, `matched_digest`, `context_digest`, `engine_digest`, and `evidence_digest`.
+Each raw occurrence retains qualified rule ID, package digest, diagnostic code/kind, severity, effective mode, original path/byte span, one-based Unicode-scalar display coordinates, source digest, and current message/help. Evidence-bound output additionally carries `finding_id`, `matched_digest`, `context_digest`, `engine_digest`, and `evidence_digest`, plus additive `status` (the human triage bucket: `needs_review`, `confirmed_issue`, or `violation`), `finding_prefix`/`evidence_prefix` (the shortest-unique display prefix for this run), and a `snippet` (the checked source's line before, the matched span's first line and caret-end column, and the line after; `null` when source text was unavailable) that text rendering uses instead of reopening the file.
 
 Different rules retain separate findings even on identical source spans. Exact duplicate emissions from one rule may be deduplicated in stable order. A rule invocation that fails cannot supply a supposedly complete finding set; incomplete status survives any retained earlier findings.
 
