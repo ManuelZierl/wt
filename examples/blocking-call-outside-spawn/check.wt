@@ -1,0 +1,11 @@
+for suggest_call in file.ast_match("rust", "completion::suggest($$$)") {
+    let inside_spawn = false;
+    for spawn_call in file.ast_match("rust", "thread::spawn($$$)") {
+        if span::contains(spawn_call.span, suggest_call.span) {
+            inside_spawn = true;
+        }
+    }
+    if !inside_spawn {
+        emit(suggest_call.span, "blocking-call-outside-spawn");
+    }
+}

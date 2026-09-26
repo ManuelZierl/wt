@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"name": "top-level-call", "files": [{"path": "src/composer.rs", "fixture": "fixtures/top-level-call.rs"}], "expect": [{"path": "src/composer.rs", "code": "blocking-call-outside-spawn", "kind": "review"}]},
+    {"name": "inside-spawn", "files": [{"path": "src/composer.rs", "fixture": "fixtures/inside-spawn.rs"}], "expect": []},
+    {"name": "inside-nested-block-inside-spawn", "files": [{"path": "src/composer.rs", "fixture": "fixtures/inside-nested-block-inside-spawn.rs"}], "expect": []},
+    {"name": "text-in-string-and-comment", "files": [{"path": "src/composer.rs", "fixture": "fixtures/text-in-string-and-comment.rs"}], "expect": []}
+  ]
+}

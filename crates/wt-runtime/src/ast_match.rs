@@ -146,6 +146,40 @@ pub fn compile_pattern(language: AstLanguage, pattern: &str) -> Result<Pattern> 
     Ok(compiled)
 }
 
+/// Compile a contextual pattern eagerly, at rule compile time: `context` is a
+/// standalone snippet that must parse without error nodes in `language`, and
+/// `selector` is the tree-sitter node kind inside it that becomes the actual
+/// pattern (ast-grep's "contextual pattern"). This is how `ast.v1` matches a
+/// node kind that cannot stand alone as a bare pattern — a Rust `match` arm, a
+/// struct field, an attribute, a function parameter — by writing it inside a
+/// minimal enclosing shape and naming the node kind to extract. Errors here
+/// are rule-authoring mistakes (WT100), not runtime/analysis conditions.
+pub fn compile_context_pattern(
+    language: AstLanguage,
+    context: &str,
+    selector: &str,
+) -> Result<Pattern> {
+    if context.is_empty() || selector.is_empty() {
+        bail!("WT100 ast.v1 contextual pattern requires a non-empty context and selector");
+    }
+    if context.len() > MAX_PATTERN_BYTES || selector.len() > MAX_PATTERN_BYTES {
+        bail!("WT102 ast.v1 contextual pattern exceeds {MAX_PATTERN_BYTES} bytes");
+    }
+    let compiled = Pattern::contextual(context, selector, language.support()).map_err(|error| {
+        anyhow!(
+            "WT100 invalid ast.v1 contextual pattern for language {:?}, selector {selector:?}: {error}",
+            language.name()
+        )
+    })?;
+    if compiled.has_error() {
+        bail!(
+            "WT100 ast.v1 contextual pattern for language {:?} does not parse cleanly in that grammar",
+            language.name()
+        );
+    }
+    Ok(compiled)
+}
+
 /// Parse a source file. Never panics: tree-sitter recovers from syntax
 /// errors instead of failing outright, so this only errs for degenerate
 /// conditions (e.g. no parser assigned); ordinary syntax errors surface

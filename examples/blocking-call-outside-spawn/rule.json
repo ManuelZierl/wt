@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "blocking-call-outside-spawn",
+  "title": "completion::suggest call is not inside thread::spawn",
+  "documentation": {"file": "rule.md"},
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["src/**/*.rs"]},
+  "diagnostics": {
+    "blocking-call-outside-spawn": {
+      "kind": "review",
+      "message": "This completion::suggest call is not inside a thread::spawn closure, so it runs on the caller's thread.",
+      "help": "Move the call inside a thread::spawn closure, or confirm this call site is intentionally synchronous."
+    }
+  },
+  "code": {"language": "wt-rule-1", "capabilities": ["ast.v1"], "file": "check.wt"},
+  "tests_file": "tests.json",
+  "metadata": {"source": "Synthetic example demonstrating span::contains as a general containment primitive: a call is flagged unless a structurally unrelated span (a thread::spawn call) encloses it."}
+}

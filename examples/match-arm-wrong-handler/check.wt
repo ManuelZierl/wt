@@ -1,0 +1,13 @@
+for m in file.ast_match_context(
+    "rust",
+    "match a { Action::Copy => $BODY }",
+    "match_arm"
+) {
+    let body = m.node("BODY");
+    if body == () {
+        continue;
+    }
+    if body.ast_match("rust", "self.copy_document($$$)").is_empty() {
+        emit(m.span, "wrong-copy-handler");
+    }
+}

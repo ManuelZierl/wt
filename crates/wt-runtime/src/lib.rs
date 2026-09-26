@@ -919,6 +919,32 @@ impl QueryArena {
     }
 }
 
+/// Identity of one compiled `ast.v1` pattern: either a bare pattern literal,
+/// or an ast-grep "contextual pattern" (a standalone `context` snippet plus
+/// the `selector` node kind extracted from it). Both are static-literal
+/// arguments compiled eagerly at rule-compile time (see `validate_ast_match_call`
+/// / `validate_ast_match_context_call`), so a malformed one is a WT100
+/// rule-compile error, never a runtime surprise.
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+enum AstPatternKey {
+    Plain(String),
+    Context(String, String),
+}
+
+impl AstPatternKey {
+    /// Stable string used both as the `ast.v1` query-cache key and as the
+    /// compiled-pattern reservation key; distinct from any plain pattern
+    /// text so the two families never collide.
+    fn cache_label(&self) -> String {
+        match self {
+            AstPatternKey::Plain(pattern) => pattern.clone(),
+            AstPatternKey::Context(context, selector) => {
+                format!("ctx\u{0}{selector}\u{0}{context}")
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Program {
     ast: AST,
@@ -926,7 +952,7 @@ pub struct Program {
     diagnostics: BTreeMap<String, DiagnosticDef>,
     execution: Execution,
     path_globs: HashMap<String, GlobMatcher>,
-    ast_patterns: BTreeMap<(AstLanguage, String), ast_grep_core::Pattern>,
+    ast_patterns: BTreeMap<(AstLanguage, AstPatternKey), ast_grep_core::Pattern>,
     plan: JsonValue,
     rule_ir: RuleIr,
     compiled_residual_bytes: usize,
@@ -1076,7 +1102,7 @@ impl Program {
         keys.extend(
             self.ast_patterns
                 .keys()
-                .map(|(language, pattern)| format!("ast.v1:{}:{pattern}", language.name())),
+                .map(|(language, key)| format!("ast.v1:{}:{}", language.name(), key.cache_label())),
         );
         (
             self.compiled_residual_bytes,
@@ -1474,6 +1500,7 @@ fn query_template(
                 format!("regex.{}", call.name)
             }
             ("repo", "files") => "repo.files".into(),
+            ("span", "contains") => "span.contains".into(),
             _ => return None,
         };
         let shape = result_shape(&operation);
@@ -1484,6 +1511,7 @@ fn query_template(
             "contains" | "starts_with" | "ends_with" | "trim" | "split" | "replace"
             | "len_bytes" => format!("text.{}", call.name),
             "ast_match" => "ast.match".into(),
+            "ast_match_context" => "ast.match_context".into(),
             "node" => "ast.node".into(),
             "group_text" => "regex.group_text".into(),
             "is_empty" => "sequence.is_empty".into(),
@@ -1576,9 +1604,9 @@ fn query_template(
 fn result_shape(operation: &str) -> String {
     match operation {
         "regex.is_match" | "path.matches" | "text.contains" | "text.starts_with"
-        | "text.ends_with" | "sequence.is_empty" => "bool".into(),
+        | "text.ends_with" | "sequence.is_empty" | "span.contains" => "bool".into(),
         "regex.find_all" | "regex.find_in" | "text.lines" | "text.split" | "ast.match"
-        | "repo.files" => "sequence".into(),
+        | "ast.match_context" | "repo.files" => "sequence".into(),
         "regex.capture_text" | "ast.node" => "optional<match>".into(),
         "regex.group_text" => "optional<text>".into(),
         "text.len_bytes" => "int".into(),
@@ -1706,7 +1734,7 @@ struct Validator<'a> {
     /// `ast.v1` patterns are static-literal arguments compiled eagerly here
     /// (once per distinct language+pattern), so a malformed pattern is a
     /// WT100 rule-compile error, never a runtime surprise.
-    ast_patterns: BTreeMap<(AstLanguage, String), ast_grep_core::Pattern>,
+    ast_patterns: BTreeMap<(AstLanguage, AstPatternKey), ast_grep_core::Pattern>,
 }
 
 impl Validator<'_> {
@@ -2058,6 +2086,22 @@ impl Validator<'_> {
             self.validate_ast_match_call(call, 0, 1)?;
             return Ok(Ty::Sequence(Box::new(Ty::Match)));
         }
+        if matches!(
+            (&receiver, name),
+            (Ty::File, "ast_match_context") | (Ty::Match, "ast_match_context")
+        ) {
+            let args = self.validate_arguments(call)?;
+            if args.len() != 3 || args[0] != Ty::Text || args[1] != Ty::Text || args[2] != Ty::Text
+            {
+                return Err(self.error(
+                    "WT104",
+                    "ast_match_context requires (language, context, selector) string literals",
+                    call_position(call),
+                ));
+            }
+            self.validate_ast_match_context_call(call, 0, 1, 2)?;
+            return Ok(Ty::Sequence(Box::new(Ty::Match)));
+        }
         if matches!((&receiver, name), (Ty::Match, "node")) {
             let args = self.validate_arguments(call)?;
             if args.len() != 1 || args[0] != Ty::Text {
@@ -2121,17 +2165,15 @@ impl Validator<'_> {
         }
     }
 
-    /// Validate and eagerly compile a static (language, pattern) ast.v1
-    /// argument pair, caching the compiled pattern by canonical key.
-    fn validate_ast_match_call(
-        &mut self,
+    /// Resolve a static `language` string-literal argument to a supported,
+    /// build-enabled `AstLanguage`, or a WT104 rule-authoring error.
+    fn require_ast_language(
+        &self,
         call: &FnCallExpr,
         language_index: usize,
-        pattern_index: usize,
-    ) -> Result<()> {
-        self.require_capability("ast.v1", "ast_match")?;
+    ) -> Result<AstLanguage> {
         let language_text = self.require_static_text(call, language_index)?;
-        let language = AstLanguage::parse(&language_text).ok_or_else(|| {
+        AstLanguage::parse(&language_text).ok_or_else(|| {
             self.error(
                 "WT104",
                 format!(
@@ -2143,14 +2185,54 @@ impl Validator<'_> {
                     .map(Expr::position)
                     .unwrap_or(Position::START),
             )
-        })?;
+        })
+    }
+
+    /// Validate and eagerly compile a static (language, pattern) ast.v1
+    /// argument pair, caching the compiled pattern by canonical key.
+    fn validate_ast_match_call(
+        &mut self,
+        call: &FnCallExpr,
+        language_index: usize,
+        pattern_index: usize,
+    ) -> Result<()> {
+        self.require_capability("ast.v1", "ast_match")?;
+        let language = self.require_ast_language(call, language_index)?;
         let pattern_text = self.require_static_text(call, pattern_index)?;
-        if !self
-            .ast_patterns
-            .contains_key(&(language, pattern_text.clone()))
-        {
-            let compiled = ast_match::compile_pattern(language, &pattern_text)?;
-            self.ast_patterns.insert((language, pattern_text), compiled);
+        let key = (language, AstPatternKey::Plain(pattern_text.clone()));
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.ast_patterns.entry(key) {
+            entry.insert(ast_match::compile_pattern(language, &pattern_text)?);
+        }
+        Ok(())
+    }
+
+    /// Validate and eagerly compile a static (language, context, selector)
+    /// ast.v1 contextual-pattern argument triple, caching the compiled
+    /// pattern by canonical key. `context` must parse as a standalone
+    /// snippet in `language`, and `selector` must be a node kind that
+    /// appears in it; either failure is a WT100 rule-compile error (see
+    /// `ast_match::compile_context_pattern`).
+    fn validate_ast_match_context_call(
+        &mut self,
+        call: &FnCallExpr,
+        language_index: usize,
+        context_index: usize,
+        selector_index: usize,
+    ) -> Result<()> {
+        self.require_capability("ast.v1", "ast_match_context")?;
+        let language = self.require_ast_language(call, language_index)?;
+        let context_text = self.require_static_text(call, context_index)?;
+        let selector_text = self.require_static_text(call, selector_index)?;
+        let key = (
+            language,
+            AstPatternKey::Context(context_text.clone(), selector_text.clone()),
+        );
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.ast_patterns.entry(key) {
+            entry.insert(ast_match::compile_context_pattern(
+                language,
+                &context_text,
+                &selector_text,
+            )?);
         }
         Ok(())
     }
@@ -2287,6 +2369,15 @@ impl Validator<'_> {
                 self.require_static_pattern(call, 0)?;
                 Ok(Ty::Match.optional())
             }
+            ("span", "contains")
+                if args.len() == 2 && args[0] == Ty::Span && args[1] == Ty::Span =>
+            {
+                // Plain byte-range arithmetic on spans already obtained
+                // through a capability-gated API (`file.span`, `matched.span`,
+                // `line.span`); this predicate itself needs no capability of
+                // its own, same as the comparison operators above.
+                Ok(Ty::Bool)
+            }
             _ => Err(self.error(
                 "WT104",
                 format!("unregistered call {namespace}::{name} or invalid arity/types"),
@@ -2367,7 +2458,10 @@ impl Validator<'_> {
     }
 
     fn check_binding_name(&self, name: &str, pos: Position) -> Result<()> {
-        if matches!(name, "file" | "repo" | "emit" | "text" | "path" | "rx") {
+        if matches!(
+            name,
+            "file" | "repo" | "emit" | "text" | "path" | "rx" | "span"
+        ) {
             Err(self.error(
                 "WT105",
                 format!("reserved host name {name:?} cannot be shadowed"),
@@ -2904,24 +2998,16 @@ impl EvalContext<'_> {
                 _ => bail!("is_empty requires a WT sequence"),
             },
             ("", "ast_match") => {
-                let (file_index, scope) = match args.first() {
-                    Some(Value::File(file)) => (file.index, None),
-                    Some(Value::Match(matched)) if matched.reportable => {
-                        (matched.file, Some((matched.start, matched.end)))
-                    }
-                    Some(Value::Match(_)) => {
-                        bail!("ast_match requires a match with a reportable span")
-                    }
-                    _ => bail!("ast_match requires a file or a match"),
-                };
+                let (file_index, scope) = ast_match_receiver("ast_match", &args)?;
                 let language_text = expect_text(args.get(1))?;
                 let pattern_text = expect_text(args.get(2))?;
                 let language = AstLanguage::parse(language_text)
                     .ok_or_else(|| anyhow!("unsupported ast.v1 language {language_text}"))?;
+                let key = (language, AstPatternKey::Plain(pattern_text.to_owned()));
                 let pattern = self
                     .program
                     .ast_patterns
-                    .get(&(language, pattern_text.to_owned()))
+                    .get(&key)
                     .ok_or_else(|| anyhow!("uncompiled ast.v1 pattern"))?;
                 let file = &self.files[file_index];
                 self.charge_native(file.text.len())?;
@@ -2934,6 +3020,44 @@ impl EvalContext<'_> {
                     file,
                     language,
                     pattern_text,
+                    pattern,
+                    start,
+                    end,
+                    independent_slice,
+                    &mut self.temporary_bytes,
+                )?;
+                Ok(Value::Sequence(
+                    matches.into_iter().map(Value::Match).collect(),
+                ))
+            }
+            ("", "ast_match_context") => {
+                let (file_index, scope) = ast_match_receiver("ast_match_context", &args)?;
+                let language_text = expect_text(args.get(1))?;
+                let context_text = expect_text(args.get(2))?;
+                let selector_text = expect_text(args.get(3))?;
+                let language = AstLanguage::parse(language_text)
+                    .ok_or_else(|| anyhow!("unsupported ast.v1 language {language_text}"))?;
+                let key = (
+                    language,
+                    AstPatternKey::Context(context_text.to_owned(), selector_text.to_owned()),
+                );
+                let pattern = self
+                    .program
+                    .ast_patterns
+                    .get(&key)
+                    .ok_or_else(|| anyhow!("uncompiled ast.v1 contextual pattern"))?;
+                let file = &self.files[file_index];
+                self.charge_native(file.text.len())?;
+                let (start, end, independent_slice) = match scope {
+                    Some((start, end)) => (start, end, true),
+                    None => (0, file.text.len(), false),
+                };
+                let pattern_key = key.1.cache_label();
+                let matches = self.arena.ast_match(
+                    file_index,
+                    file,
+                    language,
+                    &pattern_key,
                     pattern,
                     start,
                     end,
@@ -3005,6 +3129,15 @@ impl EvalContext<'_> {
                         .into_iter()
                         .map(|index| Value::File(FileValue { index }))
                         .collect(),
+                ))
+            }
+            ("span", "contains") => {
+                let outer = expect_span(args.first())?;
+                let inner = expect_span(args.get(1))?;
+                Ok(Value::Bool(
+                    outer.file == inner.file
+                        && inner.start >= outer.start
+                        && inner.end <= outer.end,
                 ))
             }
             _ => bail!("unregistered WT call {namespace}::{name}"),
@@ -3398,6 +3531,19 @@ fn expect_span(value: Option<&Value>) -> Result<SpanValue> {
         _ => bail!("expected source span"),
     }
 }
+/// Resolve the shared `file.ast_match*`/`matched.ast_match*` receiver: a
+/// whole file (search everywhere) or a previous reportable match (search
+/// only within its span, i.e. "X inside Y").
+fn ast_match_receiver(name: &str, args: &[Value]) -> Result<(usize, Option<(usize, usize)>)> {
+    match args.first() {
+        Some(Value::File(file)) => Ok((file.index, None)),
+        Some(Value::Match(matched)) if matched.reportable => {
+            Ok((matched.file, Some((matched.start, matched.end))))
+        }
+        Some(Value::Match(_)) => bail!("{name} requires a match with a reportable span"),
+        _ => bail!("{name} requires a file or a match"),
+    }
+}
 fn equal_values(left: &Value, right: &Value) -> bool {
     match (left, right) {
         (Value::Unit, Value::Unit) => true,
@@ -3704,6 +3850,16 @@ mod tests {
     }
 
     #[test]
+    fn match_arm_wrong_handler_fixture_suite_matches_expected_codes() {
+        run_example_fixture_suite("examples/match-arm-wrong-handler");
+    }
+
+    #[test]
+    fn blocking_call_outside_spawn_fixture_suite_matches_expected_codes() {
+        run_example_fixture_suite("examples/blocking-call-outside-spawn");
+    }
+
+    #[test]
     fn decimal_fixture_suite_matches_expected_codes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples/template-number-decimal-step");
@@ -3820,6 +3976,172 @@ mod tests {
         .expect("a pattern that cannot parse must fail at compile time")
         .to_string();
         assert!(error.contains("WT100"));
+    }
+
+    #[test]
+    fn ast_match_context_matches_a_rust_match_arm_and_captures_its_body() {
+        // The motivating case: a Rust `match` arm cannot stand alone as a
+        // bare ast.v1 pattern (`Action::Copy => $BODY` is not a complete
+        // node by itself), so a contextual pattern wraps it in a minimal
+        // `match` and selects the `match_arm` node kind out of it.
+        let value = manifest(
+            json!({}),
+            json!({"copy-arm":{"kind":"review"}}),
+            &["ast.v1"],
+        );
+        let program = compile(
+            &value,
+            r#"
+            for m in file.ast_match_context(
+                "rust",
+                "match a { Action::Copy => $BODY }",
+                "match_arm"
+            ) {
+                emit(m.span, "copy-arm");
+                if m.node("BODY") != () {
+                    emit(m.node("BODY").span, "copy-arm");
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let source = "fn dispatch(action: Action) {\n    match action {\n        Action::Copy => self.copy_document(path),\n        Action::Move => self.move_document(path),\n    }\n}\n";
+        let mut arena = QueryArena::new(true);
+        let result = program
+            .execute(
+                &[SourceFile {
+                    path: "actions.rs".into(),
+                    text: source.into(),
+                }],
+                &mut arena,
+            )
+            .unwrap();
+        assert_eq!(result.len(), 2, "{result:?}");
+        assert_eq!(
+            &source[result[0].start_byte..result[0].end_byte],
+            "Action::Copy => self.copy_document(path),"
+        );
+        assert_eq!(
+            &source[result[1].start_byte..result[1].end_byte],
+            "self.copy_document(path)"
+        );
+    }
+
+    #[test]
+    fn ast_match_context_requires_ast_v1_capability() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["text.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match_context("rust", "match a { X => $B }", "match_arm") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("ast_match_context without ast.v1 must fail validation")
+        .to_string();
+        assert!(error.contains("WT104"));
+    }
+
+    #[test]
+    fn ast_match_context_rejects_a_context_that_does_not_parse() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match_context("rust", "match a { Action::Copy => ", "match_arm") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("an unparseable context must fail at compile time")
+        .to_string();
+        assert!(error.contains("WT100"), "{error}");
+    }
+
+    #[test]
+    fn ast_match_context_rejects_an_unknown_selector_kind() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]);
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match_context("rust", "match a { X => 1 }", "not_a_real_kind") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("an unknown selector kind must fail at compile time")
+        .to_string();
+        assert!(error.contains("WT100"), "{error}");
+    }
+
+    #[test]
+    fn ast_match_context_rejects_a_selector_absent_from_the_context() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["ast.v1"]);
+        // `attribute_item` is a real Rust node kind, but this context has no
+        // attribute in it, so the selector selects nothing.
+        let error = compile(
+            &value,
+            r#"for m in file.ast_match_context("rust", "match a { X => 1 }", "attribute_item") { emit(m.span, "x"); }"#,
+        )
+        .err()
+        .expect("a selector matching nothing in the context must fail at compile time")
+        .to_string();
+        assert!(error.contains("WT100"), "{error}");
+    }
+
+    #[test]
+    fn span_contains_handles_equal_and_adjacent_spans() {
+        let value = manifest(
+            json!({"left":"AA","right":"BB"}),
+            json!({
+                "whole-contains-match":{"kind":"violation"},
+                "equal-spans-contain":{"kind":"violation"},
+                "adjacent-spans-do-not-contain":{"kind":"violation"}
+            }),
+            &["text.v1"],
+        );
+        let program = compile(
+            &value,
+            r#"
+            for m in rx::find_all(file, "left") {
+                if span::contains(file.span, m.span) {
+                    emit(m.span, "whole-contains-match");
+                }
+                if span::contains(m.span, m.span) {
+                    emit(m.span, "equal-spans-contain");
+                }
+            }
+            for a in rx::find_all(file, "left") {
+                for b in rx::find_all(file, "right") {
+                    if !span::contains(a.span, b.span) && !span::contains(b.span, a.span) {
+                        emit(a.span, "adjacent-spans-do-not-contain");
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let mut arena = QueryArena::new(true);
+        let result = program
+            .execute(
+                &[SourceFile {
+                    path: "x".into(),
+                    text: "AABB".into(),
+                }],
+                &mut arena,
+            )
+            .unwrap();
+        let codes: BTreeSet<_> = result.iter().map(|d| d.code.clone()).collect();
+        assert_eq!(
+            codes,
+            BTreeSet::from([
+                "whole-contains-match".to_string(),
+                "equal-spans-contain".to_string(),
+                "adjacent-spans-do-not-contain".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn span_contains_requires_two_span_operands() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["text.v1"]);
+        let error = compile(&value, r#"span::contains(file.text, file.span);"#)
+            .err()
+            .expect("span::contains requires two spans")
+            .to_string();
+        assert!(error.contains("WT104"), "{error}");
     }
 
     #[test]

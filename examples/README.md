@@ -8,6 +8,10 @@
 
 [`raw-sql-in-loop/`](raw-sql-in-loop/) combines both capabilities: `ast.v1` finds each `for` loop and gives the byte span of its body, then `text.v1`'s `rx::find_in` regex-searches only inside that span for a raw `SELECT ... FROM` string.
 
+[`match-arm-wrong-handler/`](match-arm-wrong-handler/) is a `rust` `ast.v1` rule using `file.ast_match_context(...)`: a bare `Action::Copy => $BODY` is not a complete node on its own, so the rule wraps it in a minimal `match` and selects the `match_arm` node kind out of it, then checks the captured body for a nested call to `self.copy_document(...)`.
+
+[`blocking-call-outside-spawn/`](blocking-call-outside-spawn/) is a `rust` `ast.v1` rule using `span.contains`: it flags a `completion::suggest(...)` call unless some `thread::spawn(...)` call's span encloses it, with fixtures for a top-level call, a call inside the spawn closure, one inside a nested block within it, and text that only looks like a call in a string or comment.
+
 `review-legacy-endpoint.json` is a raw-positive review-trigger submission.
 `second-encounter.scenarios.json` lists its later-work transitions (unchanged
 recheck, a new copy, a watched-dependency edit, an owner edit, a missing

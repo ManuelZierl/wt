@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "match-arm-wrong-handler",
+  "title": "Action::Copy match arm does not call copy_document",
+  "documentation": {"file": "rule.md"},
+  "mode": "advisory",
+  "severity": "warning",
+  "execution": "file",
+  "scope": {"include": ["src/**/*.rs"]},
+  "diagnostics": {
+    "wrong-copy-handler": {
+      "kind": "review",
+      "message": "This Action::Copy match arm does not call copy_document.",
+      "help": "Confirm the arm intentionally delegates elsewhere, or call self.copy_document(...) as the other arms do for their own variant."
+    }
+  },
+  "code": {"language": "wt-rule-1", "capabilities": ["ast.v1"], "file": "check.wt"},
+  "tests_file": "tests.json",
+  "metadata": {"source": "Synthetic example demonstrating ast.v1's contextual pattern form (context + selector) on a Rust match arm, a node kind that cannot stand alone as a bare pattern."}
+}

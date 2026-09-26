@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"name": "wrong-handler", "files": [{"path": "src/dispatch.rs", "fixture": "fixtures/wrong-handler.rs"}], "expect": [{"path": "src/dispatch.rs", "code": "wrong-copy-handler", "kind": "review"}]},
+    {"name": "correct-handler", "files": [{"path": "src/dispatch.rs", "fixture": "fixtures/correct-handler.rs"}], "expect": []},
+    {"name": "text-in-string-and-comment", "files": [{"path": "src/dispatch.rs", "fixture": "fixtures/text-in-string-and-comment.rs"}], "expect": []}
+  ]
+}
