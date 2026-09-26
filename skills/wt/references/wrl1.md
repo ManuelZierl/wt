@@ -85,8 +85,10 @@ unsupported/disabled language is a validation error, not a runtime one.
 |---|---|
 | `file.ast_match("language", "pattern")` | Finite sequence of structural matches in the whole file |
 | `matched.ast_match("language", "pattern")` | Matches nested inside a previous match's span ("X inside Y") |
+| `file.ast_match_context("language", "context", "selector")` | Same, but for a node kind that cannot stand alone as a bare pattern |
 | `matched.node("NAME")` | The `$NAME`/`$$$NAME` metavariable capture, or unit if absent |
 | `matched.text`, `matched.span` | Same as any other match |
+| `span::contains(outer, inner)` | Boolean: `inner`'s byte range lies within `outer`'s, same file |
 
 ```wt
 for m in file.ast_match("python", "for $X in $ITER:\n    $$$BODY") {
@@ -101,3 +103,41 @@ A file with any tree-sitter error/missing node is an analysis gap for every
 parsing only happens for files an unguarded `ast_match` call actually reaches.
 `text.v1` and `ast.v1` combine freely, e.g. `rx::find_in(m.node("BODY").span, "pattern")`
 to regex-search only inside a captured structural span.
+
+A bare pattern must parse as a complete node by itself, which rules out node
+kinds that only make sense nested inside something else: a Rust `match` arm,
+a struct field, an attribute, a function parameter. `ast_match_context` covers
+these with ast-grep's contextual-pattern form: `context` is a standalone
+snippet that must parse without error, and `selector` is the tree-sitter node
+kind inside it to actually match against (an unknown kind, or one that
+matches nothing in `context`, is a compile-time error, same as a bad plain
+pattern). Metavariable captures work the same way.
+
+```wt
+for m in file.ast_match_context(
+    "rust",
+    "match a { Action::Copy => $BODY }",
+    "match_arm"
+) {
+    emit(m.node("BODY").span, "copy-arm-body");
+}
+```
+
+`ast_match` alone can express "found inside a span" by re-searching within a
+captured span, but not "found, unless some other span encloses it" (e.g. a
+call that must run inside `thread::spawn`). `span::contains` on two
+independently captured spans covers that case directly:
+
+```wt
+for suggest_call in file.ast_match("rust", "completion::suggest($$$)") {
+    let inside_spawn = false;
+    for spawn_call in file.ast_match("rust", "thread::spawn($$$)") {
+        if span::contains(spawn_call.span, suggest_call.span) {
+            inside_spawn = true;
+        }
+    }
+    if !inside_spawn {
+        emit(suggest_call.span, "blocking-call-outside-spawn");
+    }
+}
+```
