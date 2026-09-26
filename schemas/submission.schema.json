@@ -87,7 +87,7 @@
       "required": ["language", "capabilities", "source"],
       "properties": {
         "language": {"const": "wt-rule-1"},
-        "capabilities": {"type": "array", "items": {"enum": ["text.v1", "path.v1", "ast.v1", "repo.v1"]}},
+        "capabilities": {"type": "array", "items": {"enum": ["text.v1", "path.v1", "ast.v1", "repo.v1", "toml.v1"]}},
         "source": {"type": "string", "maxLength": 131072}
       }
     },

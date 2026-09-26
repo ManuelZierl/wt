@@ -1,0 +1,92 @@
+let root = file.toml();
+
+let dependencies = root.get("dependencies");
+if dependencies != () {
+    for entry in dependencies.entries() {
+        let renamed = entry.value.get("package");
+        if renamed != () {
+            if renamed.text != "shared" {
+                emit(renamed.span, "host-dependency");
+            }
+        } else if entry.key != "shared" {
+            emit(entry.key_span, "host-dependency");
+        }
+    }
+}
+
+let dev_dependencies = root.get("dev-dependencies");
+if dev_dependencies != () {
+    for entry in dev_dependencies.entries() {
+        let renamed = entry.value.get("package");
+        if renamed != () {
+            if renamed.text != "shared" {
+                emit(renamed.span, "host-dependency");
+            }
+        } else if entry.key != "shared" {
+            emit(entry.key_span, "host-dependency");
+        }
+    }
+}
+
+let build_dependencies = root.get("build-dependencies");
+if build_dependencies != () {
+    for entry in build_dependencies.entries() {
+        let renamed = entry.value.get("package");
+        if renamed != () {
+            if renamed.text != "shared" {
+                emit(renamed.span, "host-dependency");
+            }
+        } else if entry.key != "shared" {
+            emit(entry.key_span, "host-dependency");
+        }
+    }
+}
+
+let targets = root.get("target");
+if targets != () {
+    for target_entry in targets.entries() {
+        let target_table = target_entry.value;
+
+        let target_dependencies = target_table.get("dependencies");
+        if target_dependencies != () {
+            for entry in target_dependencies.entries() {
+                let renamed = entry.value.get("package");
+                if renamed != () {
+                    if renamed.text != "shared" {
+                        emit(renamed.span, "host-dependency");
+                    }
+                } else if entry.key != "shared" {
+                    emit(entry.key_span, "host-dependency");
+                }
+            }
+        }
+
+        let target_dev_dependencies = target_table.get("dev-dependencies");
+        if target_dev_dependencies != () {
+            for entry in target_dev_dependencies.entries() {
+                let renamed = entry.value.get("package");
+                if renamed != () {
+                    if renamed.text != "shared" {
+                        emit(renamed.span, "host-dependency");
+                    }
+                } else if entry.key != "shared" {
+                    emit(entry.key_span, "host-dependency");
+                }
+            }
+        }
+
+        let target_build_dependencies = target_table.get("build-dependencies");
+        if target_build_dependencies != () {
+            for entry in target_build_dependencies.entries() {
+                let renamed = entry.value.get("package");
+                if renamed != () {
+                    if renamed.text != "shared" {
+                        emit(renamed.span, "host-dependency");
+                    }
+                } else if entry.key != "shared" {
+                    emit(entry.key_span, "host-dependency");
+                }
+            }
+        }
+    }
+}

@@ -141,3 +141,39 @@ for suggest_call in file.ast_match("rust", "completion::suggest($$$)") {
     }
 }
 ```
+
+## Structured data (`toml.v1`)
+
+Add `toml.v1` for structured access to a TOML document (a Cargo manifest or
+other TOML config) instead of a line-by-line regex over its text (see
+`wt capabilities` for the installed parser's identity).
+
+| API | Result |
+|---|---|
+| `file.toml()` | The document root value; a file that does not parse cleanly as TOML is an analysis gap |
+| `value.get("key")` | Direct child of a table value named `key`, or unit; not recursive across dotted paths |
+| `value.entries()` | Finite sequence of a table's entries (`.key`, `.key_span`, `.value`), source order |
+| `value.items()` | Finite sequence of an array's elements, source order |
+| `value.kind` | `"table"`, `"array"`, `"string"`, `"integer"`, `"float"`, or `"boolean"` |
+| `value.text`, `value.span` | Decoded content (strings) or raw source text (everything else); source span |
+
+```wt
+let dependencies = file.toml().get("dependencies");
+if dependencies != () {
+    for entry in dependencies.entries() {
+        let renamed = entry.value.get("package");
+        if renamed != () {
+            if renamed.text != "shared" {
+                emit(renamed.span, "host-dependency");
+            }
+        } else if entry.key != "shared" {
+            emit(entry.key_span, "host-dependency");
+        }
+    }
+}
+```
+
+A renamed dependency (`alias = { package = "forbidden-crate", ... }`) is
+resolved through its `package` sub-key, not its own key; a dotted-key
+assignment (`a.b = 1`) and the equivalent inline table parse to the same
+table-of-tables shape, so a rule does not need to special-case either form.

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "clean-only-shared",
+      "files": [{"path": "crates/app/Cargo.toml", "fixture": "fixtures/clean-only-shared.toml"}],
+      "expect": []
+    },
+    {
+      "name": "dependencies-escape-patterns",
+      "files": [{"path": "crates/app/Cargo.toml", "fixture": "fixtures/dependencies-escape-patterns.toml"}],
+      "expect": [
+        {"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"},
+        {"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"},
+        {"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"},
+        {"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"}
+      ]
+    },
+    {
+      "name": "dev-dependencies-forbidden",
+      "files": [{"path": "crates/app/Cargo.toml", "fixture": "fixtures/dev-dependencies-forbidden.toml"}],
+      "expect": [{"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"}]
+    },
+    {
+      "name": "build-dependencies-forbidden",
+      "files": [{"path": "crates/app/Cargo.toml", "fixture": "fixtures/build-dependencies-forbidden.toml"}],
+      "expect": [{"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"}]
+    },
+    {
+      "name": "target-windows-forbidden",
+      "files": [{"path": "crates/app/Cargo.toml", "fixture": "fixtures/target-windows-forbidden.toml"}],
+      "expect": [{"path": "crates/app/Cargo.toml", "code": "host-dependency", "kind": "violation"}]
+    }
+  ]
+}

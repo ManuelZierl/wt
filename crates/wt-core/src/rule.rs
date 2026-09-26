@@ -376,11 +376,12 @@ fn validate_common(fields: ValidationFields<'_>, submission: bool) -> Result<()>
     if code.language != "wt-rule-1" {
         bail!("code.language must be wt-rule-1")
     }
-    if code
-        .capabilities
-        .iter()
-        .any(|cap| !matches!(cap.as_str(), "text.v1" | "path.v1" | "ast.v1" | "repo.v1"))
-    {
+    if code.capabilities.iter().any(|cap| {
+        !matches!(
+            cap.as_str(),
+            "text.v1" | "path.v1" | "ast.v1" | "repo.v1" | "toml.v1"
+        )
+    }) {
         bail!("code.capabilities contains an unknown capability")
     }
     if !submission && code.source.is_some() {

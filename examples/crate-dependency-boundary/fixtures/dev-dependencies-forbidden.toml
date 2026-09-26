@@ -1,0 +1,9 @@
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = { workspace = true }
+
+[dev-dependencies]
+forbidden-test-crate = "1.0"

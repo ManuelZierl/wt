@@ -1,0 +1,11 @@
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = { workspace = true }
+plain_forbidden = "1.0"
+alias = { package = "forbidden-crate", version = "1" }
+forbidden.workspace = true
+forbidden.path = ".."
+another = { version = "2", features = ["x"] }

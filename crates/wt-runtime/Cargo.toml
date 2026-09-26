@@ -15,6 +15,15 @@ sha2.workspace = true
 rhai = { version = "=1.26.1", features = ["internals", "sync"] }
 ast-grep-core = "=0.45.3"
 ast-grep-language = { version = "=0.45.3", default-features = false }
+# Pinned exactly: the resolved parser version is `toml.v1` runtime semantics
+# (see `toml_data::TOML_PARSER_CRATE`), same reasoning as the ast-grep/grammar
+# pins below. Chosen over `toml_edit`/`toml` for this crate's one job: a
+# generic, span-preserving TOML `Value` tree (byte spans on every key and
+# value, including dotted keys and inline tables) with a single transitive
+# dependency (`smallvec`), no format-preservation/editing machinery we do not
+# need. It does not parse TOML datetimes (see `toml_data::parse`), which is an
+# accepted limitation for the manifest/config files this capability targets.
+toml-span = "=0.7.1"
 # Pinned exactly, alongside the same crates as optional ast-grep-language
 # dependencies, so the resolved grammar version (part of ast.v1 runtime
 # semantics; see `ast_match::AstLanguage::grammar_version`) is deterministic.

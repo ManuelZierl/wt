@@ -12,6 +12,8 @@
 
 [`blocking-call-outside-spawn/`](blocking-call-outside-spawn/) is a `rust` `ast.v1` rule using `span.contains`: it flags a `completion::suggest(...)` call unless some `thread::spawn(...)` call's span encloses it, with fixtures for a top-level call, a call inside the spawn closure, one inside a nested block within it, and text that only looks like a call in a string or comment.
 
+[`crate-dependency-boundary/`](crate-dependency-boundary/) is a `toml.v1` rule: `crates/app/Cargo.toml` may depend only on the workspace's `shared` crate. `file.toml()` parses the manifest structurally, so a renamed dependency (`alias = { package = "forbidden-crate", ... }`), a dotted-key table (`forbidden.workspace = true`), and a plain inline table are all resolved to the same thing — an entry's actual package name — instead of a line-by-line regex that a rename or a dependency sub-table can slip past. Fixtures cover `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, a target-qualified table, and a manifest that does not parse as TOML at all (an analysis gap, exercised as a direct unit test since `tests.json` cannot express one).
+
 `review-legacy-endpoint.json` is a raw-positive review-trigger submission.
 `second-encounter.scenarios.json` lists its later-work transitions (unchanged
 recheck, a new copy, a watched-dependency edit, an owner edit, a missing

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "crate-dependency-boundary",
+  "title": "The app crate may depend only on the shared crate",
+  "documentation": {"file": "rule.md"},
+  "mode": "enforced",
+  "severity": "error",
+  "execution": "file",
+  "scope": {"include": ["crates/app/Cargo.toml"]},
+  "diagnostics": {
+    "host-dependency": {
+      "kind": "violation",
+      "message": "This Cargo manifest depends on a crate other than the workspace's `shared` crate.",
+      "help": "Depend only on `shared`, or move this dependency (and whatever needs it) into `shared` itself."
+    }
+  },
+  "code": {"language": "wt-rule-1", "capabilities": ["toml.v1"], "file": "check.wt"},
+  "tests_file": "tests.json",
+  "metadata": {"source": "Synthetic example demonstrating toml.v1: a Cargo workspace dependency-boundary rule, structurally parsing Cargo.toml instead of a line-by-line regex."}
+}

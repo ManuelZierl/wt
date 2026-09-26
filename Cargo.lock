@@ -1225,6 +1225,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml-span"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f22ba417d437b5fa5dcba6c27dbd6c14f38845315b724d89fed73b7a426451b7"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1520,6 +1529,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "toml-span",
  "tree-sitter-javascript",
  "tree-sitter-python",
  "tree-sitter-rust",

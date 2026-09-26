@@ -59,12 +59,13 @@ pub const WRL1_SEMANTICS_EPOCH: u64 = 1;
 /// pasting the "actual" value the failure prints.
 #[cfg(test)]
 const RUNTIME_SOURCE_FINGERPRINT: &str =
-    "sha256:78439676174e635bedb38c67dde1b028f1613f398b0094837cd2b877983d3207";
+    "sha256:794114ba05019153ecaa94ee78addb3ad71ed386d82b49e3009c2b230fe5b1a6";
 
 /// wt-runtime source files that implement rule semantics: the interpreter
 /// and its builtins (`lib.rs`), `ast.v1`'s matcher/grammar mapping
-/// (`ast_match.rs`), and the shared text/digest representation both of them
-/// operate on (`shared_text.rs`). `performance_tests.rs` is excluded: it is
+/// (`ast_match.rs`), `toml.v1`'s parser/tree mapping (`toml_data.rs`), and
+/// the shared text/digest representation all of them operate on
+/// (`shared_text.rs`). `performance_tests.rs` is excluded: it is
 /// a `#[cfg(test)]`-only module (see `crates/wt-runtime/src/lib.rs`) that
 /// cannot affect what a real build reports. Only ever read by the tripwire
 /// test below, so this (and the fingerprint above) stay test-only.
@@ -74,6 +75,10 @@ const RUNTIME_SOURCE_FILES: &[(&str, &str)] = &[
     (
         "ast_match.rs",
         include_str!("../../wt-runtime/src/ast_match.rs"),
+    ),
+    (
+        "toml_data.rs",
+        include_str!("../../wt-runtime/src/toml_data.rs"),
     ),
     (
         "shared_text.rs",
@@ -136,9 +141,14 @@ const AST_GRAMMAR_COMPONENTS: &[&str] = &[
 /// declare that capability. Rules that don't declare it are unaffected --
 /// they keep the base identity.
 ///
-/// Example (not wired up by this change): a `toml.v1` capability backed by
-/// a TOML parser would add `("toml.v1", &["toml"])` here.
-const CAPABILITY_COMPONENTS: &[(&str, &[&str])] = &[];
+/// `toml.v1` is backed by `toml-span` (see `crates/wt-runtime/src/toml_data.rs`
+/// and its `TOML_PARSER_CRATE` constant); a parser version bump changes
+/// `toml.v1` matching/span semantics, so it folds in here. `smallvec` is
+/// `toml-span`'s own only dependency, but it was already present in this
+/// workspace's `Cargo.lock` before `toml.v1` existed (pulled in transitively
+/// elsewhere) and is a generic small-vector container, not TOML-parsing
+/// semantics -- it is deliberately left out.
+const CAPABILITY_COMPONENTS: &[(&str, &[&str])] = &[("toml.v1", &["toml-span"])];
 
 /// The frozen wt 0.0.1 release identity. Verified against the `v0.0.1` tag:
 /// `wt check --format json --show-reviewed --root <kea>` built from that tag
@@ -316,6 +326,27 @@ mod tests {
         assert_eq!(
             base,
             review_engine_identity(&["text.v1".to_owned(), "ast.v1".to_owned()])
+        );
+    }
+
+    #[test]
+    fn toml_v1_folds_its_parser_version_in_but_only_for_rules_that_declare_it() {
+        // A rule that only declares base-set capabilities keeps the frozen
+        // v0.0.1 identity untouched by `toml.v1` existing at all.
+        let base = review_engine_identity(&["text.v1".to_owned(), "ast.v1".to_owned()]);
+        assert_eq!(base, V0_0_1_ENGINE_DIGEST);
+
+        // A rule that declares `toml.v1` gets a different identity, folding
+        // in the pinned `toml-span` version -- so a parser upgrade reopens
+        // review decisions for `toml.v1` rules without touching every other
+        // rule in the repository.
+        let with_toml = review_engine_identity(&["toml.v1".to_owned()]);
+        assert_ne!(base, with_toml);
+        assert_eq!(
+            with_toml,
+            review_engine_identity(&["text.v1".to_owned(), "toml.v1".to_owned()]),
+            "declaring toml.v1 alongside a base capability is the same identity \
+             as toml.v1 alone -- the base identity itself does not change"
         );
     }
 

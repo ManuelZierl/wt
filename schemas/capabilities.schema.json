@@ -4,7 +4,7 @@
   "title": "Installed Watchtower capabilities",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "command", "build", "features", "schemas", "language", "helpers", "ast", "commands", "guide_digests", "configuration_keys", "check_options", "resource_support"],
+  "required": ["schema_version", "command", "build", "features", "schemas", "language", "helpers", "ast", "toml", "commands", "guide_digests", "configuration_keys", "check_options", "resource_support"],
   "properties": {
     "schema_version": {"const": 1},
     "command": {"const": "capabilities"},
@@ -14,6 +14,7 @@
     "language": {"const": "wt-rule-1"},
     "helpers": {"type": "array", "items": {"type": "string"}},
     "ast": {"type": "object", "required": ["engine", "languages"], "properties": {"engine": {"type": "string"}, "languages": {"type": "array", "items": {"type": "object", "required": ["language", "grammar"], "properties": {"language": {"type": "string"}, "grammar": {"type": "string"}}}}}},
+    "toml": {"type": "object", "required": ["parser"], "properties": {"parser": {"type": "string"}}},
     "commands": {"type": "array", "items": {"type": "string"}},
     "guide_digests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
     "configuration_keys": {"type": "array", "items": {"type": "string"}},

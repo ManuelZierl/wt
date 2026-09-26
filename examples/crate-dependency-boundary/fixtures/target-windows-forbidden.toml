@@ -1,0 +1,9 @@
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3"

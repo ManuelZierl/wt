@@ -23,6 +23,9 @@ pub use ast_match::{
     supported_languages as ast_supported_languages, AST_ENGINE,
 };
 use ast_match::{AstLanguage, AstMatch};
+mod toml_data;
+pub use toml_data::TOML_PARSER_CRATE;
+use toml_data::{TomlEntry, TomlValue};
 mod shared_text;
 pub use shared_text::SharedText;
 #[cfg(test)]
@@ -253,6 +256,8 @@ enum Value {
     Match(MatchValue),
     Line(LineValue),
     Repo,
+    Toml(TomlValue),
+    TomlEntry(TomlEntry),
     Sequence(Vec<Value>),
 }
 
@@ -298,6 +303,11 @@ struct AstQueryKey {
     independent_slice: bool,
 }
 
+/// Cache of parsed `toml.v1` documents, file-index-agnostic (a `TomlValue`'s
+/// `file` field is stamped on by the caller at each `file.toml()` call), keyed
+/// by (path, content digest) like `AstTreeCache`.
+type TomlTreeCache = HashMap<(String, [u8; 32]), Arc<Result<TomlValue, String>>>;
+
 /// Per-run shared native query storage.
 pub struct QueryArena {
     optimized: bool,
@@ -305,6 +315,7 @@ pub struct QueryArena {
     capture_text: HashMap<DerivedKey, CaptureResult>,
     ast: HashMap<AstQueryKey, QueryEntry>,
     parsed_trees: AstTreeCache,
+    toml_trees: TomlTreeCache,
     text: HashMap<TextKey, TextResult>,
     stats: ArenaStats,
     retained_bytes: usize,
@@ -336,6 +347,7 @@ impl QueryArena {
             capture_text: HashMap::new(),
             ast: HashMap::new(),
             parsed_trees: HashMap::new(),
+            toml_trees: HashMap::new(),
             text: HashMap::new(),
             stats: ArenaStats::default(),
             retained_bytes: 0,
@@ -386,6 +398,7 @@ impl QueryArena {
         self.capture_text.clear();
         self.ast.clear();
         self.parsed_trees.clear();
+        self.toml_trees.clear();
         self.text.clear();
         self.retained_bytes = self.retained_bytes.saturating_sub(self.text_retained_bytes);
         self.text_retained_bytes = 0;
@@ -784,6 +797,33 @@ impl QueryArena {
         entry
     }
 
+    /// Parse `file` as TOML, cached per (path, digest) for the current
+    /// file-local transaction so repeated `toml.v1` calls in the same rule
+    /// (or nested `.get`/`.entries`/`.items` navigation) do not reparse. Any
+    /// parse failure turns the whole call into an analysis gap for the file
+    /// (never a silent no-match), same contract as `ast_tree` above.
+    fn toml_tree(
+        &mut self,
+        file_index: usize,
+        file: &SourceFile,
+        digest: [u8; 32],
+    ) -> Result<TomlValue> {
+        let key = (file.path.clone(), digest);
+        if let Some(cached) = self.toml_trees.get(&key) {
+            return cached
+                .as_ref()
+                .clone()
+                .map(|value| value.with_file(file_index))
+                .map_err(|error| anyhow!("{error}"));
+        }
+        self.stats.parser_evaluations += 1;
+        let built = toml_data::parse(file_index, &file.text)
+            .map_err(|error| format!("WT201 toml.v1 analysis gap: {:?} {error}", file.path));
+        let entry = Arc::new(built);
+        self.toml_trees.insert(key, entry.clone());
+        entry.as_ref().clone().map_err(|error| anyhow!("{error}"))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn ast_match(
         &mut self,
@@ -1008,7 +1048,7 @@ pub fn compile(manifest: &serde_json::Value, source: &str) -> Result<Program> {
     for capability in &capabilities {
         if !matches!(
             capability.as_str(),
-            "text.v1" | "path.v1" | "ast.v1" | "repo.v1"
+            "text.v1" | "path.v1" | "ast.v1" | "repo.v1" | "toml.v1"
         ) {
             bail!("WT104 unknown capability {capability}");
         }
@@ -1515,6 +1555,10 @@ fn query_template(
             "node" => "ast.node".into(),
             "group_text" => "regex.group_text".into(),
             "is_empty" => "sequence.is_empty".into(),
+            "toml" => "toml.parse".into(),
+            "get" => "toml.get".into(),
+            "entries" => "toml.entries".into(),
+            "items" => "toml.items".into(),
             _ => return None,
         };
         let shape = result_shape(&operation);
@@ -1606,9 +1650,11 @@ fn result_shape(operation: &str) -> String {
         "regex.is_match" | "path.matches" | "text.contains" | "text.starts_with"
         | "text.ends_with" | "sequence.is_empty" | "span.contains" => "bool".into(),
         "regex.find_all" | "regex.find_in" | "text.lines" | "text.split" | "ast.match"
-        | "ast.match_context" | "repo.files" => "sequence".into(),
+        | "ast.match_context" | "repo.files" | "toml.entries" | "toml.items" => "sequence".into(),
         "regex.capture_text" | "ast.node" => "optional<match>".into(),
         "regex.group_text" => "optional<text>".into(),
+        "toml.get" => "optional<toml>".into(),
+        "toml.parse" => "toml".into(),
         "text.len_bytes" => "int".into(),
         _ => "text".into(),
     }
@@ -1707,6 +1753,8 @@ enum Ty {
     Match,
     Line,
     Repo,
+    Toml,
+    TomlEntry,
     Sequence(Box<Ty>),
     Optional(Box<Ty>),
 }
@@ -2041,8 +2089,9 @@ impl Validator<'_> {
             }
             Ty::Match => self.require_any_capability(&["text.v1", "ast.v1"], "match APIs")?,
             Ty::Line => self.require_text_surface()?,
+            Ty::Toml | Ty::TomlEntry => self.require_capability("toml.v1", "toml.v1 value APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "path.v1", "repo.v1", "ast.v1"],
+                &["text.v1", "path.v1", "repo.v1", "ast.v1", "toml.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -2057,6 +2106,12 @@ impl Validator<'_> {
             (Ty::Sequence(_), "is_empty") => Ty::Bool,
             (Ty::Line, "text") => Ty::Text,
             (Ty::Line, "span") => Ty::Span,
+            (Ty::Toml, "kind") => Ty::Text,
+            (Ty::Toml, "text") => Ty::Text,
+            (Ty::Toml, "span") => Ty::Span,
+            (Ty::TomlEntry, "key") => Ty::Text,
+            (Ty::TomlEntry, "key_span") => Ty::Span,
+            (Ty::TomlEntry, "value") => Ty::Toml,
             _ => {
                 return Err(self.error(
                     "WT104",
@@ -2120,8 +2175,10 @@ impl Validator<'_> {
             Ty::Text => self.require_text_surface()?,
             Ty::Match => self.require_any_capability(&["text.v1", "ast.v1"], "match APIs")?,
             Ty::Repo => self.require_any_capability(&["text.v1", "repo.v1"], "repository APIs")?,
+            Ty::File if name == "toml" => self.require_capability("toml.v1", "file.toml()")?,
+            Ty::Toml => self.require_capability("toml.v1", "toml.v1 value APIs")?,
             Ty::Sequence(_) => self.require_any_capability(
-                &["text.v1", "path.v1", "repo.v1", "ast.v1"],
+                &["text.v1", "path.v1", "repo.v1", "ast.v1", "toml.v1"],
                 "sequence APIs",
             )?,
             _ => {}
@@ -2143,6 +2200,10 @@ impl Validator<'_> {
                 Ok(Ty::Text)
             }
             (Ty::Sequence(_), "is_empty") if args.is_empty() => Ok(Ty::Bool),
+            (Ty::File, "toml") if args.is_empty() => Ok(Ty::Toml),
+            (Ty::Toml, "get") if args.len() == 1 && args[0] == Ty::Text => Ok(Ty::Toml.optional()),
+            (Ty::Toml, "entries") if args.is_empty() => Ok(Ty::Sequence(Box::new(Ty::TomlEntry))),
+            (Ty::Toml, "items") if args.is_empty() => Ok(Ty::Sequence(Box::new(Ty::Toml))),
             (Ty::Match, "group_text") if args.len() == 1 && args[0] == Ty::Text => {
                 let name = self.require_static_text(call, 0)?;
                 if !self
@@ -2913,6 +2974,41 @@ impl EvalContext<'_> {
                 start: line.start,
                 end: line.end,
             })),
+            (Value::Toml(value), "kind") => {
+                let kind = value.kind_name();
+                self.charge_temporary(kind.len())?;
+                Ok(Value::Text(kind.into()))
+            }
+            (Value::Toml(value), "text") => {
+                let text = value.text();
+                self.charge_temporary(text.len())?;
+                Ok(Value::Text(text))
+            }
+            (Value::Toml(value), "span") => {
+                let (start, end) = value.span();
+                Ok(Value::Span(SpanValue {
+                    file: value.file,
+                    start,
+                    end,
+                }))
+            }
+            (Value::TomlEntry(entry), "key") => {
+                let key = entry.key();
+                self.charge_temporary(key.len())?;
+                Ok(Value::Text(key))
+            }
+            (Value::TomlEntry(entry), "key_span") => {
+                let (start, end) = entry.key_span();
+                Ok(Value::Span(SpanValue {
+                    file: entry.file,
+                    start,
+                    end,
+                }))
+            }
+            (Value::TomlEntry(entry), "value") => {
+                self.charge_temporary(LOGICAL_VALUE_BYTES)?;
+                Ok(Value::Toml(entry.value()))
+            }
             _ => bail!("unknown or unavailable WT property {name}"),
         }
     }
@@ -3099,6 +3195,59 @@ impl EvalContext<'_> {
                 let value = matched.groups.get(name).and_then(Option::as_ref);
                 self.charge_temporary(value.map_or(0, |value| value.len()))?;
                 Ok(value.map_or(Value::Unit, |value| Value::Text(value.clone())))
+            }
+            ("", "toml") => {
+                let file_index = expect_file(args.first())?.index;
+                let file = &self.files[file_index];
+                self.charge_native(file.text.len())?;
+                let digest = file
+                    .text
+                    .digest(&mut self.arena.stats.cache_key_bytes_hashed);
+                let value = self.arena.toml_tree(file_index, file, digest)?;
+                self.charge_temporary(LOGICAL_VALUE_BYTES)?;
+                Ok(Value::Toml(value))
+            }
+            ("", "get") => {
+                let value = match args.first() {
+                    Some(Value::Toml(value)) => value,
+                    _ => bail!("get requires a toml.v1 value"),
+                };
+                let key = expect_text(args.get(1))?;
+                match value.get(key) {
+                    Some(child) => {
+                        self.charge_temporary(LOGICAL_VALUE_BYTES)?;
+                        Ok(Value::Toml(child))
+                    }
+                    None => Ok(Value::Unit),
+                }
+            }
+            ("", "entries") => {
+                let value = match args.first() {
+                    Some(Value::Toml(value)) => value,
+                    _ => bail!("entries requires a toml.v1 value"),
+                };
+                let entries = value.entries();
+                if entries.len() > MAX_SEQUENCE {
+                    bail!("sequence limit exceeded");
+                }
+                self.charge_temporary(entries.len() * LOGICAL_VALUE_BYTES)?;
+                Ok(Value::Sequence(
+                    entries.into_iter().map(Value::TomlEntry).collect(),
+                ))
+            }
+            ("", "items") => {
+                let value = match args.first() {
+                    Some(Value::Toml(value)) => value,
+                    _ => bail!("items requires a toml.v1 value"),
+                };
+                let items = value.items();
+                if items.len() > MAX_SEQUENCE {
+                    bail!("sequence limit exceeded");
+                }
+                self.charge_temporary(items.len() * LOGICAL_VALUE_BYTES)?;
+                Ok(Value::Sequence(
+                    items.into_iter().map(Value::Toml).collect(),
+                ))
             }
             (
                 "text",
@@ -3877,6 +4026,27 @@ mod tests {
     }
 
     #[test]
+    fn crate_dependency_boundary_fixture_suite_matches_expected_codes() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/crate-dependency-boundary");
+        let program = run_example_fixture_suite("examples/crate-dependency-boundary");
+        // `tests.json` has no way to express an expected analysis gap (see
+        // schemas/tests.schema.json); a malformed manifest is asserted here
+        // instead, same pattern as the invalid-TSX check above.
+        let malformed = std::fs::read_to_string(root.join("fixtures/malformed.toml")).unwrap();
+        let error = program
+            .execute(
+                &[SourceFile {
+                    path: "crates/app/Cargo.toml".into(),
+                    text: malformed.into(),
+                }],
+                &mut QueryArena::new(true),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("WT201"), "{error}");
+    }
+
+    #[test]
     fn text_v1_supplies_core_matching_paths_and_repository_calls() {
         let mut value = manifest(
             json!({"hit":"bad"}),
@@ -3930,8 +4100,13 @@ mod tests {
         let path = manifest(json!({}), diagnostic.clone(), &["path.v1"]);
         assert!(compile(&path, "path::matches(file.path, \"**\");").is_ok());
         assert!(compile(&path, "rx::is_match(file, \"missing\");").is_err());
-        let repo = manifest(json!({}), diagnostic, &["repo.v1"]);
+        let repo = manifest(json!({}), diagnostic.clone(), &["repo.v1"]);
         assert!(compile(&repo, "text::contains(file.text, \"x\");").is_err());
+        assert!(compile(&repo, "let root = file.toml();").is_err());
+        let toml = manifest(json!({}), diagnostic, &["toml.v1"]);
+        assert!(compile(&toml, "let root = file.toml();").is_ok());
+        assert!(compile(&toml, "rx::is_match(file, \"missing\");").is_err());
+        assert!(compile(&toml, "file.ast_match(\"python\", \"$X\");").is_err());
     }
 
     #[test]
@@ -4142,6 +4317,171 @@ mod tests {
             .expect("span::contains requires two spans")
             .to_string();
         assert!(error.contains("WT104"), "{error}");
+    }
+
+    #[test]
+    fn toml_requires_toml_v1_capability() {
+        let value = manifest(json!({}), json!({"x":{"kind":"violation"}}), &["text.v1"]);
+        let error = compile(&value, r#"let root = file.toml(); emit(root.span, "x");"#)
+            .err()
+            .expect("file.toml() without toml.v1 must fail validation")
+            .to_string();
+        assert!(error.contains("WT104"), "{error}");
+    }
+
+    #[test]
+    fn toml_sequence_helpers_work_with_only_the_toml_v1_capability() {
+        // `.entries()`/`.items()` produce a WT sequence; `.len`/`.is_empty()`
+        // on that sequence must not require an unrelated capability such as
+        // `text.v1` or `ast.v1`.
+        let value = manifest(
+            json!({}),
+            json!({"nonempty":{"kind":"violation"}}),
+            &["toml.v1"],
+        );
+        let program = compile(
+            &value,
+            r#"
+            let dependencies = file.toml().get("dependencies");
+            if dependencies != () && !dependencies.entries().is_empty() {
+                emit(dependencies.span, "nonempty");
+            }
+            "#,
+        )
+        .unwrap();
+        let result = program
+            .execute(
+                &[SourceFile {
+                    path: "Cargo.toml".into(),
+                    text: "[dependencies]\nshared = \"1\"\n".into(),
+                }],
+                &mut QueryArena::new(true),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn toml_get_entries_items_and_kind_resolve_a_renamed_dependency() {
+        let value = manifest(
+            json!({}),
+            json!({"host-dependency":{"kind":"violation"}}),
+            &["toml.v1"],
+        );
+        let program = compile(
+            &value,
+            r#"
+            let dependencies = file.toml().get("dependencies");
+            if dependencies != () {
+                for entry in dependencies.entries() {
+                    let renamed = entry.value.get("package");
+                    if renamed != () {
+                        if renamed.text != "shared" {
+                            emit(renamed.span, "host-dependency");
+                        }
+                    } else if entry.key != "shared" {
+                        emit(entry.key_span, "host-dependency");
+                    }
+                }
+            }
+            let tags = file.toml().get("tags");
+            if tags != () {
+                for tag in tags.items() {
+                    if tag.kind == "string" && tag.text == "forbidden" {
+                        emit(tag.span, "host-dependency");
+                    }
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let source = "tags = [\"ok\", \"forbidden\"]\n[dependencies]\nshared = { workspace = true }\nalias = { package = \"forbidden-crate\", version = \"1\" }\nplain = \"1.0\"\n";
+        let mut result = program
+            .execute(
+                &[SourceFile {
+                    path: "Cargo.toml".into(),
+                    text: source.into(),
+                }],
+                &mut QueryArena::new(true),
+            )
+            .unwrap();
+        result.sort_by_key(|finding| finding.start_byte);
+        // "forbidden" (the tag), "forbidden-crate" (via alias.package), then
+        // "plain" (via its own key) — source order.
+        assert_eq!(result.len(), 3, "{result:?}");
+        assert_eq!(
+            &source[result[0].start_byte..result[0].end_byte],
+            "forbidden"
+        );
+        assert_eq!(
+            &source[result[1].start_byte..result[1].end_byte],
+            "forbidden-crate"
+        );
+        assert_eq!(&source[result[2].start_byte..result[2].end_byte], "plain");
+    }
+
+    #[test]
+    fn toml_key_and_value_spans_are_correct_across_multi_byte_utf8() {
+        // "café" is 5 bytes (the "é" is 2 UTF-8 bytes); both the key span and
+        // the value span must land on the exact byte range, not a
+        // character-count-based approximation. The key is quoted because
+        // bare TOML keys are ASCII-only.
+        let value = manifest(json!({}), json!({"hit":{"kind":"violation"}}), &["toml.v1"]);
+        let program = compile(
+            &value,
+            r#"
+            for entry in file.toml().entries() {
+                emit(entry.key_span, "hit");
+                emit(entry.value.span, "hit");
+            }
+            "#,
+        )
+        .unwrap();
+        let source = "\"café\" = \"caf\u{e9} r\u{e9}sum\u{e9}\"\n";
+        let result = program
+            .execute(
+                &[SourceFile {
+                    path: "x.toml".into(),
+                    text: source.into(),
+                }],
+                &mut QueryArena::new(true),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 2, "{result:?}");
+        assert_eq!(&source[result[0].start_byte..result[0].end_byte], "café");
+        assert_eq!(
+            &source[result[1].start_byte..result[1].end_byte],
+            "caf\u{e9} r\u{e9}sum\u{e9}"
+        );
+    }
+
+    #[test]
+    fn toml_parse_failure_is_an_analysis_gap_not_a_silent_empty_document() {
+        let value = manifest(json!({}), json!({"hit":{"kind":"violation"}}), &["toml.v1"]);
+        let program = compile(
+            &value,
+            r#"
+            let dependencies = file.toml().get("dependencies");
+            if dependencies != () {
+                for entry in dependencies.entries() {
+                    emit(entry.key_span, "hit");
+                }
+            }
+            "#,
+        )
+        .unwrap();
+        let error = program
+            .execute(
+                &[SourceFile {
+                    path: "Cargo.toml".into(),
+                    text: "[dependencies\nshared = \"1\"\n".into(),
+                }],
+                &mut QueryArena::new(true),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("WT201"), "{error}");
+        assert!(error.contains("Cargo.toml"), "{error}");
     }
 
     #[test]

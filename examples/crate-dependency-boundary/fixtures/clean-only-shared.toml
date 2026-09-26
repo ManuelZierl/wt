@@ -1,0 +1,15 @@
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+shared = { workspace = true }
+
+[dev-dependencies]
+shared = { workspace = true }
+
+[build-dependencies]
+shared = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+shared = { workspace = true }
