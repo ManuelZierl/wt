@@ -12,6 +12,7 @@ mod discovery;
 mod engine_identity;
 mod fixtures;
 mod formatting;
+mod idents;
 mod inspection;
 mod protocol;
 mod reviews;

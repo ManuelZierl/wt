@@ -12,7 +12,10 @@
         "start_byte": {"type": "integer", "minimum": 0}, "end_byte": {"type": "integer", "minimum": 0},
         "kind": {"enum": ["review", "violation"]}, "mode": {"enum": ["advisory", "enforced", "disabled"]},
         "severity": {"enum": ["error", "warning", "info"]}, "blocking": {"type": "boolean"},
-        "message": {"type": "string"}, "help": {"type": "string"}
+        "message": {"type": "string"}, "help": {"type": "string"},
+        "status": {"enum": ["needs_review", "confirmed_issue", "violation", "accepted"]},
+        "finding_prefix": {"type": "string"}, "evidence_prefix": {"type": "string"},
+        "snippet": {"type": ["object", "null"]}
       }
     },
     "check": {

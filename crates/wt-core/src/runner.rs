@@ -10,7 +10,7 @@ use crate::selection::{self, SelectedFile};
 use anyhow::{anyhow, bail, Result};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
 use wt_runtime::{QueryArena, RawDiagnostic, SourceFile};
@@ -449,6 +449,19 @@ fn update(options: &Value) -> Result<Value> {
     ))
 }
 
+/// Wall time for the summary line (`"143 files in 0.2s"`), in whole
+/// milliseconds. Snapshot tests need a fixed value regardless of how fast
+/// the machine running them is; `WT_CHECK_FIXED_ELAPSED_MS` (internal,
+/// test-only, intentionally undocumented for users) overrides it when set.
+fn elapsed_ms(started: &std::time::Instant) -> u128 {
+    if let Ok(fixed) = std::env::var("WT_CHECK_FIXED_ELAPSED_MS") {
+        if let Ok(millis) = fixed.parse::<u128>() {
+            return millis;
+        }
+    }
+    started.elapsed().as_millis()
+}
+
 fn check(options: &Value) -> Result<Value> {
     let started = std::time::Instant::now();
     let mut discovery_options = options.clone();
@@ -806,24 +819,56 @@ fn check(options: &Value) -> Result<Value> {
         .cloned()
         .collect::<Vec<_>>();
     let diagnostics = render_records(&records, &workspace, options)?;
-    let review_result = (if preview {
+    let store_loaded = if preview {
         Ok(reviews::Store::default())
     } else {
         reviews::load(&workspace.root)
-    })
-    .and_then(|store| reviews::apply(&workspace.root, diagnostics.clone(), &store));
-    let (diagnostics, reviewed, review_records, evidence_reads) = match review_result {
-        Ok(state) => (
-            state.diagnostics,
-            state.reviewed,
-            state.records,
-            Some(state.evidence_reads),
-        ),
+    };
+    let review_result = store_loaded.and_then(|store| {
+        let application = reviews::apply(&workspace.root, diagnostics.clone(), &store)?;
+        Ok((application, store))
+    });
+    let (diagnostics, reviewed, review_records, evidence_reads, id_universe) = match review_result {
+        Ok((state, store)) => {
+            // The shortest-unique-prefix universe: every finding id and
+            // evidence digest this run knows about, whether or not it is
+            // actionable, hidden as reviewed, or just a stored decision for
+            // a finding not observed this time. A stable universe keeps a
+            // given id's displayed prefix the same across `--detail`/
+            // `--show-reviewed` variations of the same run.
+            let mut universe = store.known_ids();
+            for finding in state.diagnostics.iter().chain(state.reviewed.iter()) {
+                if let Some(id) = finding["finding_id"].as_str() {
+                    universe.insert(id.to_owned());
+                }
+                if let Some(evidence) = finding["evidence_digest"].as_str() {
+                    universe.insert(evidence.to_owned());
+                }
+            }
+            (
+                state.diagnostics,
+                state.reviewed,
+                state.records,
+                Some(state.evidence_reads),
+                universe,
+            )
+        }
         Err(error) => {
             errors.push(json!({"error": format!("invalid_review_state: {error}")}));
-            (diagnostics, Vec::new(), Vec::new(), None)
+            (diagnostics, Vec::new(), Vec::new(), None, BTreeSet::new())
         }
     };
+    let prefix_len = crate::idents::prefix_len(&id_universe);
+    let mut diagnostics = diagnostics;
+    let mut reviewed = reviewed;
+    for finding in diagnostics.iter_mut().chain(reviewed.iter_mut()) {
+        if let Some(id) = finding["finding_id"].as_str().map(str::to_owned) {
+            finding["finding_prefix"] = json!(crate::idents::display(&id, prefix_len));
+        }
+        if let Some(evidence) = finding["evidence_digest"].as_str().map(str::to_owned) {
+            finding["evidence_prefix"] = json!(crate::idents::display(&evidence, prefix_len));
+        }
+    }
     let mut notices = Vec::new();
     notices.extend(cache.notices.clone());
     let partial_policy = selection.partial || requested.is_some() || preview;
@@ -938,7 +983,7 @@ fn check(options: &Value) -> Result<Value> {
         "errors": errors,
         "rules": rule_summaries,
         "files": selection.coverage,
-        "summary": {"raw_findings": diagnostics.len()+reviewed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len()},
+        "summary": {"raw_findings": diagnostics.len()+reviewed.len(), "reviewed_findings": reviewed.len(), "actionable_findings": diagnostics.len(), "checked_files": relevant_files.len(), "blocking_diagnostics": blocking, "advisory_diagnostics": diagnostics.iter().filter(|value| value["blocking"] == false).count(), "review_diagnostics": diagnostics.iter().filter(|value| value["kind"] == "review").count(), "binary_skips": binary_skips, "analysis_gaps": relevant_gaps.len(), "known_issues": diagnostics.iter().filter(|value| value["status"] == "confirmed_issue").count(), "elapsed_ms": elapsed_ms(&started)},
         "gaps": relevant_gaps,
     });
     if bool_option(options, "stats", false)? {
@@ -951,7 +996,7 @@ fn check(options: &Value) -> Result<Value> {
         runtime_stats["bytes_hashed"] = json!(selection.bytes_hashed);
         runtime_stats["relevant_rule_file_pairs"] = json!(checked.values().sum::<usize>());
         result["stats"] = json!({"runtime": runtime_stats, "cache": cache.stats_value(),
-            "measurement":{"elapsed_ms":started.elapsed().as_millis(),
+            "measurement":{"elapsed_ms":elapsed_ms(&started),
                 "review_evidence_reads":evidence_reads.map_or(json!("not_measured"), |n| json!(n)), "peak_rss_bytes":"not_measured"}});
     }
     if preview {
@@ -1668,7 +1713,7 @@ fn schema(options: &Value) -> Result<Value> {
 }
 
 const AUTHOR_GUIDE: &str = "Choose the cheapest reliable protection first. When WT is useful, state exactly what the detector recognizes in rule.md. Submit JSON with documentation.source, code.source, raw-positive and raw-negative fixtures. New/update validate, format and test before storage. An acceptable review signal is still a raw-positive fixture; do not narrow a detector merely to make it disappear. Run wt check to inspect actual scope and findings. Optional intent: watch (default detect) marks a rule whose purpose is forcing re-review whenever specific code changes, not finding new occurrences; findings and repeated acceptances are its expected steady state, and wt stats reports it as watch instead of noisy.";
-const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available.";
+const REVIEW_GUIDE: &str = "Inspect the raw occurrence and its rule contract before deciding. wt inspect FINDING_ID evaluates current source and retained rationale. For contextual review signals use wt review FINDING_ID --decision acceptable --expect-evidence HASH --reason-file PATH. Use accepted-risk for a deliberately retained violation. Declare supporting evidence with --watch PATH=sha256:HASH. Fresh source/rule/dependency changes reopen acceptances. No bulk approval is available. FINDING_ID and HASH accept the shortest-unique hex prefix wt check prints (at least 8 characters, with or without sha256:), not just the full id.";
 const LANGUAGE_GUIDE: &str = "wt-rule-1 is a restricted top-level statement body. Use declared static pattern names with rx::find_all(file, \"pattern\") and emit(matched.span, \"diagnostic\"); text.v1 and ast.v1 are explicit capabilities. ast.v1 adds file.ast_match(language, pattern) for structural matches, m.node(\"NAME\") for a captured metavariable, and m.ast_match(language, pattern) to search inside a match; file.ast_match_context(language, context, selector) (also on a match) matches a contextual pattern instead, for a node kind that cannot stand alone as a bare pattern (a match arm, struct field, attribute, function parameter): context is a standalone snippet and selector is the node kind to extract from it. span::contains(outer, inner) is a boolean span-containment check for expressing \"X unless some Y's span encloses it\", independent of any capability. A file with any parse error node is an analysis gap, never a silent no-match. Only finite WT sequences can be iterated; detector programs cannot access the filesystem, external commands, or review state. Use wt plan for query inspection.";
 const STATS_GUIDE: &str = "wt stats runs a check with the same scope and flags as wt check, then reports per qualified rule: mode, severity, intent, how many repository files are in scope after the same include/exclude and ignore handling (scoped_files), any of the rule's own include globs that individually match none of them (unmatched_include, informational), raw findings from that run, stored review decisions by outcome (acceptable, confirmed_issue, accepted_risk, needs_review), and how many of those decisions are currently stale. It keeps no history; every number is recomputed from the current repository, rules and review store. Each rule gets exactly one derived signal, in this priority order: disabled (mode is disabled), unknown (the underlying check was incomplete; never reported as dead), useful (at least one confirmed_issue decision), dead (scoped_files is zero; the rule cannot fire here), watch (an intent: watch rule with current findings or decisions), quiet (scope matches files, no current findings, no pending decisions: a healthy, working rule), noisy (more than half of decided findings were accepted as acceptable), otherwise active. Run it before adding many new rules, or when a check has become noisy.";
 fn guide(options: &Value) -> Result<Value> {
@@ -1864,6 +1909,7 @@ struct Record {
     end: (usize, usize),
     file_digest: String,
     context_digest: String,
+    snippet: Option<Value>,
 }
 
 fn add_records<'a>(
@@ -1901,11 +1947,54 @@ fn add_records<'a>(
             ),
             start: coordinates(source, diagnostic.start_byte),
             end: coordinates(source, diagnostic.end_byte),
+            snippet: snippet(source, diagnostic.start_byte, diagnostic.end_byte),
             diagnostic,
             file_digest: file_digest.to_owned(),
             context_digest: context_digest.clone(),
         });
     }
+}
+
+/// A small, bounded excerpt of the checked source around one finding's
+/// span, embedded in the diagnostic so text rendering never needs to reopen
+/// the file (which could have changed, or live outside a sandboxed
+/// renderer's reach): the line before the match, the match's first line,
+/// and the line after. A match spanning more than one line is not expanded
+/// line by line here; `extra_lines` records how many more there were so the
+/// renderer can note it (rustc does the same for long spans). `None` when
+/// the source text was unavailable (e.g. a repository-execution diagnostic
+/// whose path fell outside the files actually read).
+fn snippet(source: &str, start_byte: usize, end_byte: usize) -> Option<Value> {
+    if source.is_empty() {
+        return None;
+    }
+    let lines = source
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect::<Vec<_>>();
+    let (start_line, _) = coordinates(source, start_byte);
+    let (end_line, end_column) = coordinates(source, end_byte.max(start_byte));
+    let matched_text = *lines.get(start_line.checked_sub(1)?)?;
+    let before = start_line
+        .checked_sub(2)
+        .and_then(|index| lines.get(index))
+        .map(|text| json!({"number": start_line - 1, "text": text}));
+    let after_number = end_line + 1;
+    let after = lines
+        .get(after_number - 1)
+        .map(|text| json!({"number": after_number, "text": text}));
+    let first_line_end_column = if end_line == start_line {
+        end_column
+    } else {
+        matched_text.chars().count() + 1
+    };
+    Some(json!({
+        "before": before,
+        "matched": {"number": start_line, "text": matched_text},
+        "after": after,
+        "caret_end_column": first_line_end_column,
+        "extra_lines": end_line.saturating_sub(start_line),
+    }))
 }
 
 fn render_records(
@@ -1980,7 +2069,8 @@ fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> 
         "end_line": end.0,
         "end_column": end.1,
         "message": definition.message,
-        "help": definition.help
+        "help": definition.help,
+        "snippet": record.snippet
     });
     reviews::decorate(&mut value, &record.matched_digest)?;
     Ok(value)
@@ -2203,8 +2293,22 @@ fn format_rules(options: &Value) -> Result<Value> {
     ))
 }
 
+/// Every finding id/evidence digest a check result's `diagnostics` and
+/// `reviewed` arrays mention, for prefix resolution against "current
+/// findings" (as opposed to `reviews::Store`'s "stored reviews").
+fn checked_ids(checked: &Value, field: &str) -> BTreeSet<String> {
+    checked["diagnostics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(checked["reviewed"].as_array().into_iter().flatten())
+        .filter_map(|finding| finding[field].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn review(options: &Value) -> Result<Value> {
-    let id = required_string(options, "finding_id")?;
+    let raw_id = required_string(options, "finding_id")?;
     let mut check_options = serde_json::Map::new();
     for key in COMMON_OPTIONS
         .iter()
@@ -2221,6 +2325,21 @@ fn review(options: &Value) -> Result<Value> {
     if checked["complete"] != true {
         bail!("cannot record review after incomplete analysis");
     }
+    let workspace = discovery::discover(options)?;
+    let store = reviews::load(&workspace.root)?;
+    let mut finding_candidates = checked_ids(&checked, "finding_id");
+    finding_candidates.extend(store.finding_ids());
+    let id = crate::idents::resolve(&finding_candidates, &raw_id, "finding id")?;
+    let mut options = options.clone();
+    options["finding_id"] = json!(id);
+    if let Some(raw_evidence) = options.get("expect_evidence").and_then(Value::as_str) {
+        let mut evidence_candidates = checked_ids(&checked, "evidence_digest");
+        evidence_candidates.extend(store.evidence_digests());
+        let evidence =
+            crate::idents::resolve(&evidence_candidates, raw_evidence, "evidence digest")?;
+        options["expect_evidence"] = json!(evidence);
+    }
+    let options = &options;
     let findings = checked["diagnostics"]
         .as_array()
         .into_iter()
@@ -2232,7 +2351,6 @@ fn review(options: &Value) -> Result<Value> {
         bail!("finding is absent or ambiguous; run check again");
     }
     let finding = findings[0];
-    let workspace = discovery::discover(options)?;
     let current = workspace
         .packages
         .iter()
@@ -2241,7 +2359,7 @@ fn review(options: &Value) -> Result<Value> {
     if finding["rule_digest"] != current.digest {
         bail!("rule changed after check");
     }
-    reviews::record(&workspace.root, finding, options, || {
+    let mut result = reviews::record(&workspace.root, finding, options, || {
         // Re-evaluate this rule's full source scope under the per-record lock.
         // Other independent rules were validated by the first check. Repository
         // rules still rehash their entire authorized input inventory.
@@ -2262,11 +2380,22 @@ fn review(options: &Value) -> Result<Value> {
             bail!("review evidence changed before publication; run check again");
         }
         Ok(())
-    })
+    })?;
+    result["finding_prefix"] = json!(crate::idents::display(
+        &id,
+        crate::idents::prefix_len(&finding_candidates)
+    ));
+    if let Some(record_digest) = result["record_digest"].as_str() {
+        result["record_prefix"] = json!(crate::idents::display(
+            record_digest,
+            crate::idents::MIN_PREFIX_HEX
+        ));
+    }
+    Ok(result)
 }
 
 fn inspect(options: &Value) -> Result<Value> {
-    let id = required_string(options, "finding_id")?;
+    let raw_id = required_string(options, "finding_id")?;
     let mut check_options = Map::new();
     for key in COMMON_OPTIONS
         .iter()
@@ -2285,6 +2414,11 @@ fn inspect(options: &Value) -> Result<Value> {
             checked["errors"]
         );
     }
+    let workspace = discovery::discover(options)?;
+    let store = reviews::load(&workspace.root)?;
+    let mut finding_candidates = checked_ids(&checked, "finding_id");
+    finding_candidates.extend(store.finding_ids());
+    let id = crate::idents::resolve(&finding_candidates, &raw_id, "finding id")?;
     let findings = checked["diagnostics"]
         .as_array()
         .into_iter()
@@ -2295,7 +2429,6 @@ fn inspect(options: &Value) -> Result<Value> {
     if findings.len() > 1 {
         bail!("ambiguous finding identity");
     }
-    let workspace = discovery::discover(options)?;
     let previous = reviews::stored_detail(&workspace.root, &id)?;
     if findings.is_empty() && previous.is_none() {
         bail!("unknown finding ID {id}");
@@ -2334,12 +2467,24 @@ fn inspect(options: &Value) -> Result<Value> {
         .map(|previous| crate::inspection::previous_diff(&workspace.root, previous, current))
         .transpose()?
         .flatten();
+    let finding_prefix =
+        crate::idents::display(&id, crate::idents::prefix_len(&finding_candidates));
+    let mut previous = previous;
+    if let Some(previous) = previous.as_mut() {
+        if let Some(record_digest) = previous["record_digest"].as_str() {
+            previous["record_digest_prefix"] = json!(crate::idents::display(
+                record_digest,
+                crate::idents::MIN_PREFIX_HEX
+            ));
+        }
+    }
     Ok(envelope(
         "inspect",
         "pass",
         0,
         json!({
-            "finding_id": id, "observation": if current.is_some() {"present"} else {"not_observed"},
+            "finding_id": id, "finding_prefix": finding_prefix,
+            "observation": if current.is_some() {"present"} else {"not_observed"},
             "finding": current, "previous": previous, "rule_markdown": contract,
             "stale_reasons": reasons,
             "previous_content": if previous_diff.is_some() {"verified_local_vcs_object"} else {"previous_content_unavailable"},

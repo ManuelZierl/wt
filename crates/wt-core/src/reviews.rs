@@ -63,6 +63,36 @@ pub struct Store {
     records: BTreeMap<String, Stored>,
 }
 
+impl Store {
+    /// Every finding id and evidence digest this store knows about, for
+    /// shortest-unique-prefix computation and prefix resolution (`wt
+    /// inspect`, `wt review`, `wt reviews` all accept a prefix in place of a
+    /// full id). Includes ids for records whose finding was not observed in
+    /// the current check, since a stored decision is still something an
+    /// operator may want to reference by id.
+    pub fn known_ids(&self) -> std::collections::BTreeSet<String> {
+        let mut ids = std::collections::BTreeSet::new();
+        for (id, stored) in &self.records {
+            ids.insert(id.clone());
+            ids.insert(stored.record.evidence_digest.clone());
+        }
+        ids
+    }
+
+    /// Just the finding ids this store has a decision for.
+    pub fn finding_ids(&self) -> std::collections::BTreeSet<String> {
+        self.records.keys().cloned().collect()
+    }
+
+    /// Just the evidence digests recorded in this store's decisions.
+    pub fn evidence_digests(&self) -> std::collections::BTreeSet<String> {
+        self.records
+            .values()
+            .map(|stored| stored.record.evidence_digest.clone())
+            .collect()
+    }
+}
+
 /// Identity is deliberately conservative: no fuzzy matching or automatic
 /// acceptance transfer after moves/copies. Evidence separately binds context.
 pub fn decorate(finding: &mut Value, matched_digest: &str) -> Result<()> {
@@ -241,6 +271,41 @@ fn validate(record: &Record) -> Result<()> {
     Ok(())
 }
 
+fn decision_str(decision: &Decision) -> &'static str {
+    match decision {
+        Decision::NeedsReview => "needs_review",
+        Decision::Acceptable => "acceptable",
+        Decision::ConfirmedIssue => "confirmed_issue",
+        Decision::AcceptedRisk => "accepted_risk",
+    }
+}
+
+/// The human-facing triage bucket for an actionable finding (one that ends
+/// up in `diagnostics`, not `reviewed`): `needs_review`, `confirmed_issue`,
+/// or `violation`. A stale decision always reopens to `needs_review` — its
+/// prior judgment no longer holds, regardless of what it was — with the
+/// `review_state.reasons` already computed above explaining why. Otherwise a
+/// current `confirmed_issue` decision stays `confirmed_issue`; a bare
+/// `violation`-kind finding with no decision at all is `violation`; anything
+/// else (a `review`-kind finding with no decision, or an explicit current
+/// `needs_review` decision) is `needs_review`.
+fn status_for(kind: &str, decision: &str, validity: &str) -> &'static str {
+    if validity == "stale" {
+        return "needs_review";
+    }
+    if validity == "unreviewed" {
+        return if kind == "violation" {
+            "violation"
+        } else {
+            "needs_review"
+        };
+    }
+    match decision {
+        "confirmed_issue" => "confirmed_issue",
+        _ => "needs_review",
+    }
+}
+
 pub struct Application {
     pub diagnostics: Vec<Value>,
     pub reviewed: Vec<Value>,
@@ -264,6 +329,11 @@ pub fn apply(root: &Path, diagnostics: Vec<Value>, store: &Store) -> Result<Appl
         }
         let Some(stored) = store.records.get(&id) else {
             finding["review_state"] = json!({"decision":"needs_review", "validity":"unreviewed"});
+            finding["status"] = json!(status_for(
+                finding["kind"].as_str().unwrap_or("violation"),
+                "needs_review",
+                "unreviewed"
+            ));
             result.diagnostics.push(finding);
             continue;
         };
@@ -336,18 +406,26 @@ pub fn apply(root: &Path, diagnostics: Vec<Value>, store: &Store) -> Result<Appl
             current = false;
             reasons.push("acceptable_requires_review_diagnostic".to_owned());
         }
+        let validity = if current { "current" } else { "stale" };
+        let decision_str = decision_str(&stored.record.decision);
         finding["review_state"] = json!({"decision":stored.record.decision,
-            "validity":if current {"current"} else {"stale"}, "record_digest":stored.digest,
+            "validity":validity, "record_digest":stored.digest,
             "revision":stored.revision, "reasons":reasons});
         result
             .records
             .push(json!({"finding_id":id,"decision":stored.record.decision,
-            "validity":if current {"current"} else {"stale"}, "record_digest":stored.digest,
+            "validity":validity, "record_digest":stored.digest,
             "revision":stored.revision}));
         if current && stored.record.decision.accepts() {
             finding["blocking"] = json!(false);
+            finding["status"] = json!("accepted");
             result.reviewed.push(finding);
         } else {
+            finding["status"] = json!(status_for(
+                finding["kind"].as_str().unwrap_or("violation"),
+                decision_str,
+                validity
+            ));
             result.diagnostics.push(finding);
         }
     }
@@ -370,14 +448,29 @@ pub fn apply(root: &Path, diagnostics: Vec<Value>, store: &Store) -> Result<Appl
 
 pub fn list(root: &Path, finding_id: Option<&str>) -> Result<Value> {
     let store = load(root)?;
-    if finding_id.is_some_and(|id| !store.records.contains_key(id)) {
-        bail!("unknown reviewed finding ID {}", finding_id.unwrap());
+    let resolved = finding_id
+        .map(|id| crate::idents::resolve(&store.finding_ids(), id, "finding id"))
+        .transpose()?;
+    if let Some(id) = &resolved {
+        if !store.records.contains_key(id) {
+            bail!("unknown reviewed finding ID {id}");
+        }
     }
+    let prefix_len = crate::idents::prefix_len(&store.known_ids());
+    let record_digests = store
+        .records
+        .values()
+        .map(|stored| stored.digest.clone())
+        .collect::<BTreeSet<_>>();
+    let record_prefix_len = crate::idents::prefix_len(&record_digests);
     Ok(
         json!({"schema_version":crate::CONTRACT_VERSION,"command":"reviews","status":"pass","exit_code":0,
-        "reviews":store.records.iter().filter(|(id,_)| finding_id.is_none_or(|wanted| id.as_str()==wanted)).map(|(_,s)| json!({"record":s.record,
+        "reviews":store.records.iter().filter(|(id,_)| resolved.as_deref().is_none_or(|wanted| id.as_str()==wanted)).map(|(id,s)| json!({"record":s.record,
             "record_digest":s.digest,"revision":s.revision,"rationale":s.rationale,
-            "validity":"not_evaluated"})).collect::<Vec<_>>() }),
+            "validity":"not_evaluated",
+            "finding_prefix":crate::idents::display(id, prefix_len),
+            "evidence_prefix":crate::idents::display(&s.record.evidence_digest, prefix_len),
+            "record_digest_prefix":crate::idents::display(&s.digest, record_prefix_len)})).collect::<Vec<_>>() }),
     )
 }
 
