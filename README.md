@@ -2,6 +2,8 @@
 
 Every bug fix an agent makes can leave more behind than the fix itself: a small, documented, tested check for the pattern that caused it. `wt` (also shipped as `watchtower`) runs those checks locally — no account, daemon, network, or model calls. A finding means *look at this*, not *this is wrong*: a `violation` is a prohibited source form, a `review` is a situation worth a human's judgment. Decisions about a `review` finding are recorded against the exact evidence reviewed and reopen automatically when the owning code, the rule, or a watched dependency changes.
 
+[Kea](https://github.com/ManuelZierl/kea), a Rust terminal/editor app, turned its `AGENTS.md` invariants into wt rules. One watched a UI label that claimed to know the shell's current directory ("Current shell directory: ..."), something no linter can flag as wrong on its own — but the rule pointed an agent at the one place that invariant could break, and the agent found a real bug there: the label read `shell_ready()`, which also accepts a remote SSH shell, instead of the existing `local_shell_ready()`, so Kea could show a stale local directory as the current one.
+
 ## The loop
 
 An agent notices a possible Django N+1 query — an ORM call inside a loop, one query per iteration instead of one for the whole collection — and writes a rule for it, with fixtures, using structural (`ast.v1`) matching so formatting and comments don't confuse it: [`examples/orm-query-in-loop/`](examples/orm-query-in-loop/).
@@ -96,7 +98,7 @@ cargo install --path crates/wt-cli --locked
 
 ## Why not Semgrep or ast-grep?
 
-wt uses [ast-grep](https://ast-grep.github.io/)'s matching engine under `ast.v1` for the structural half of pattern-writing, plus a plain-text `text.v1` regex API — it doesn't reinvent syntax matching. What it adds is what happens *after* a match: a `violation`/`review` split instead of one severity, mandatory fixtures before a rule can enforce anything, evidence-bound review decisions that expire when the reviewed code actually changes, `wt stats` to see which rules are earning their place, and an authoring contract (strict JSON, a restricted rule language, no I/O) built for an agent to use directly. An inline `// eslint-disable` or `# noqa` comment never expires; a wt decision does.
+wt uses [ast-grep](https://ast-grep.github.io/)'s matching engine under `ast.v1` for the structural half of pattern-writing, a plain-text `text.v1` regex API, and a `toml.v1` structured-value API for TOML manifests/config — it doesn't reinvent syntax matching. What it adds is what happens *after* a match: a `violation`/`review` split instead of one severity, mandatory fixtures before a rule can enforce anything, evidence-bound review decisions that expire when the reviewed code actually changes, `wt stats` to see which rules are earning their place, and an authoring contract (strict JSON, a restricted rule language, no I/O) built for an agent to use directly. An inline `// eslint-disable` or `# noqa` comment never expires; a wt decision does.
 
 ## Agents and CI
 
