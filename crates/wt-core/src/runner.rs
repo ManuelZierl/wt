@@ -1554,9 +1554,7 @@ fn capability_hint(id: &str, capabilities: &[String], includes: &[String]) -> Op
         return Some(json!({
             "code": "hint.capability",
             "rule_id": id,
-            "message": format!(
-                "{id} declares text.v1 only, and every scope include is *.toml; toml.v1 (file.toml()) gives structured access instead of a line-by-line regex"
-            )
+            "message": "text.v1 rule scoped only to TOML files; consider toml.v1 (file.toml()) for structured access with key and value spans"
         }));
     }
     let supported = wt_runtime::ast_supported_language_grammars()
@@ -1570,9 +1568,7 @@ fn capability_hint(id: &str, capabilities: &[String], includes: &[String]) -> Op
         return Some(json!({
             "code": "hint.capability",
             "rule_id": id,
-            "message": format!(
-                "{id} declares text.v1 only, and every scope include targets an ast.v1-supported language; ast.v1 (file.ast_match) avoids matches inside comments/strings and survives reformatting"
-            )
+            "message": "text.v1 rule scoped only to files ast.v1 can parse; consider ast.v1 (file.ast_match), which skips comments and strings and survives reformatting; keep text.v1 for comment- or string-level checks"
         }));
     }
     None
