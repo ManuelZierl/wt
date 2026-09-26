@@ -88,7 +88,7 @@ Ubuntu 22.04+ x86-64:
 curl -fsSL https://raw.githubusercontent.com/ManuelZierl/wt/main/install.sh | bash
 ```
 
-The installer downloads the latest GitHub Release, verifies its SHA-256 digest, and installs `wt` and `watchtower` to `~/.local/bin` without sudo or a Rust toolchain. Add that directory to `PATH` if needed; set `WT_INSTALL_DIR` for another location or `WT_VERSION=v0.0.1` to pin a release.
+The installer downloads the latest GitHub Release, verifies its SHA-256 digest, and installs `wt` and `watchtower` to `~/.local/bin` without sudo or a Rust toolchain. Add that directory to `PATH` if needed; set `WT_INSTALL_DIR` for another location or `WT_VERSION=v0.0.2` to pin a release.
 
 With [Rust](https://rustup.rs/) installed, build from source instead:
 
