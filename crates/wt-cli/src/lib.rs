@@ -852,6 +852,7 @@ fn print_text(value: &Value, color: &ColorMode, display: bool) {
         Some("reviews") => print!("{}", text::render_reviews(value)),
         Some("inspect") => print!("{}", text::render_inspect(value)),
         Some("review") => print!("{}", text::render_review(value)),
+        Some("validate") => print!("{}", text::render_validate(value, color)),
         _ => {
             if let Ok(text) = serde_json::to_string_pretty(value) {
                 println!("{text}");

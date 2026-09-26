@@ -460,6 +460,37 @@ pub fn render_inspect(value: &Value) -> String {
     lines.join("\n") + "\n"
 }
 
+/// `wt validate`: which rule(s) validated, plus any advisory notice (e.g. a
+/// `hint.capability` steering a `text.v1`-only rule toward `ast.v1`/
+/// `toml.v1`). Notices never change `exit_code` or `status`.
+pub fn render_validate(value: &Value, color: bool) -> String {
+    let mut lines = Vec::new();
+    if let Some(id) = value["data"]["id"].as_str() {
+        lines.push(format!("{id}: valid"));
+    } else if let Some(rules) = value["data"]["rules"].as_array() {
+        if rules.is_empty() {
+            lines.push("no rules selected".to_owned());
+        } else {
+            for rule in rules {
+                lines.push(format!("{}: valid", rule["id"].as_str().unwrap_or("?")));
+            }
+        }
+    }
+    if let Some(notices) = value["notices"].as_array() {
+        for notice in notices {
+            if notice["code"] == "hint.capability" {
+                lines.push(format!(
+                    "{}[{}]: {}",
+                    style("hint", YELLOW, color),
+                    notice["rule_id"].as_str().unwrap_or("?"),
+                    notice["message"].as_str().unwrap_or("")
+                ));
+            }
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
 /// `wt review`: confirmation of the decision just written.
 pub fn render_review(value: &Value) -> String {
     let data = &value["data"];

@@ -1514,27 +1514,111 @@ fn show(options: &Value) -> Result<Value> {
     ))
 }
 
+/// The `ast.v1` language a scope-include glob's file extension maps to, if
+/// any and if this build actually supports it. An extension-less or
+/// unrecognized glob (`crates/**`, `*.md`) returns `None`, which disqualifies
+/// the whole rule from the "every include is ast.v1-supported" hint below.
+fn glob_ast_language<'a>(glob: &str, supported: &BTreeSet<&'a str>) -> Option<&'a str> {
+    let extension = Path::new(glob).extension().and_then(|ext| ext.to_str())?;
+    let language = match extension {
+        "py" => "python",
+        "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "rs" => "rust",
+        _ => return None,
+    };
+    supported.get(language).copied()
+}
+
+/// `wt validate`'s non-blocking capability hint (`hint.capability`): a rule
+/// that only declares `text.v1`, whose every scope-include glob targets a
+/// single file type a more precise capability already covers. Advisory
+/// only — it never changes `wt validate`'s exit code or status, and a rule
+/// mixing extensions, or one already declaring `ast.v1`/`toml.v1`, gets no
+/// hint at all.
+fn capability_hint(id: &str, capabilities: &[String], includes: &[String]) -> Option<Value> {
+    let text_only = capabilities
+        .iter()
+        .any(|capability| capability == "text.v1")
+        && !capabilities
+            .iter()
+            .any(|capability| capability == "ast.v1" || capability == "toml.v1");
+    if !text_only || includes.is_empty() {
+        return None;
+    }
+    if includes
+        .iter()
+        .all(|glob| Path::new(glob).extension().and_then(|ext| ext.to_str()) == Some("toml"))
+    {
+        return Some(json!({
+            "code": "hint.capability",
+            "rule_id": id,
+            "message": format!(
+                "{id} declares text.v1 only, and every scope include is *.toml; toml.v1 (file.toml()) gives structured access instead of a line-by-line regex"
+            )
+        }));
+    }
+    let supported = wt_runtime::ast_supported_language_grammars()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<BTreeSet<_>>();
+    if includes
+        .iter()
+        .all(|glob| glob_ast_language(glob, &supported).is_some())
+    {
+        return Some(json!({
+            "code": "hint.capability",
+            "rule_id": id,
+            "message": format!(
+                "{id} declares text.v1 only, and every scope include targets an ast.v1-supported language; ast.v1 (file.ast_match) avoids matches inside comments/strings and survives reformatting"
+            )
+        }));
+    }
+    None
+}
+
 fn validate(options: &Value) -> Result<Value> {
     if options.get("submission").is_some() {
         let submission = rule::submission_from_value(required_submission_value(options)?)?;
         let value = rule::map_with_code_source(&submission);
         let program = wt_runtime::compile(&value, submission.code.source.as_deref().unwrap_or(""))?;
+        let notices = capability_hint(
+            &submission.id,
+            &submission.code.capabilities,
+            &submission.scope.include,
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
         return Ok(envelope(
             "validate",
             "pass",
             0,
-            json!({"id": submission.id, "valid": true, "plan": program.plan()}),
+            json!({"id": submission.id, "valid": true, "plan": program.plan(), "notices": notices}),
         ));
     }
     let workspace = discovery::discover(options)?;
     let requested = requested_rules(options)?;
     let selected = discovery::select_packages(&workspace.packages, requested.as_deref())?;
     let mut rules = Vec::new();
+    let mut notices = Vec::new();
     for package in selected {
         let program = wt_runtime::compile(&package.manifest_value, &package.source)?;
         rules.push(json!({"id": package.qualified_id, "valid": true, "digest": package.digest, "plan": program.plan(), "tests": package.tests.is_some()}));
+        if let Some(notice) = capability_hint(
+            &package.qualified_id,
+            &package.manifest.code.capabilities,
+            &package.manifest.scope.include,
+        ) {
+            notices.push(notice);
+        }
     }
-    Ok(envelope("validate", "pass", 0, json!({"rules": rules})))
+    Ok(envelope(
+        "validate",
+        "pass",
+        0,
+        json!({"rules": rules, "notices": notices}),
+    ))
 }
 
 fn test(options: &Value) -> Result<Value> {

@@ -680,6 +680,64 @@ fn decimal_reference_submission_validates_and_runs_all_retained_fixture_vectors(
 }
 
 #[test]
+fn validate_hints_toward_ast_v1_in_json_and_text() {
+    let root = tempdir().unwrap();
+    let global = tempdir().unwrap();
+    let rule = json!({
+        "schema_version": 1,
+        "id": "rust-call-check",
+        "title": "rust-call-check",
+        "documentation": {"source": "# Rust call check\n\nChecks for a forbidden call.\n"},
+        "mode": "advisory",
+        "severity": "info",
+        "execution": "file",
+        "scope": {"include": ["**/*.rs"]},
+        "patterns": {"bad": "forbidden_call"},
+        "diagnostics": {"hit": {"kind": "review", "message": "found", "help": "check"}},
+        "code": {"language": "wt-rule-1", "capabilities": ["text.v1"], "source": "for m in rx::find_all(file, \"bad\") { emit(m.span, \"hit\"); }"}
+    })
+    .to_string();
+    let rule_path = root.path().join("rust-call-check.json");
+    std::fs::write(&rule_path, &rule).unwrap();
+    let rule_path = rule_path.to_str().unwrap();
+
+    let json = invoke(
+        root.path(),
+        global.path(),
+        &["validate", "--file", rule_path, "--format", "json"],
+        None,
+    );
+    assert_eq!(
+        json.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&json.stdout)
+    );
+    let projected = json_output(&json);
+    let notices = projected["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 1, "{projected}");
+    assert_eq!(notices[0]["code"], "hint.capability");
+    assert_eq!(notices[0]["rule_id"], "rust-call-check");
+
+    let text = invoke(
+        root.path(),
+        global.path(),
+        &["validate", "--file", rule_path, "--format", "text"],
+        None,
+    );
+    assert_eq!(
+        text.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&text.stdout)
+    );
+    let rendered = String::from_utf8(text.stdout).unwrap();
+    assert!(rendered.contains("rust-call-check: valid"));
+    assert!(rendered.contains("hint[rust-call-check]:"));
+    assert!(rendered.contains("ast.v1"));
+}
+
+#[test]
 fn minimal_submission_lifecycle_reports_untested_then_checks_successfully() {
     let root = tempdir().unwrap();
     let global = tempdir().unwrap();

@@ -297,6 +297,103 @@ fn repository_text_surface_does_not_require_repo_capability() {
 }
 
 #[test]
+fn validate_hints_a_text_v1_submission_scoped_only_to_an_ast_v1_language() {
+    let root = tempdir().unwrap();
+    let rule = submission(
+        "rust-only",
+        "advisory",
+        serde_json::json!({"include": ["**/*.rs"]}),
+    );
+    let result = dispatch(
+        "validate",
+        &serde_json::json!({"root": root.path(), "global_dir": root.path().join("global"), "submission": rule}),
+    )
+    .unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    let notices = result["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 1, "{result}");
+    assert_eq!(notices[0]["code"], "hint.capability");
+    assert_eq!(notices[0]["rule_id"], "rust-only");
+    assert!(notices[0]["message"].as_str().unwrap().contains("ast.v1"));
+}
+
+#[test]
+fn validate_hints_a_text_v1_submission_scoped_only_to_toml() {
+    let root = tempdir().unwrap();
+    let rule = submission(
+        "toml-only",
+        "advisory",
+        serde_json::json!({"include": ["**/*.toml"]}),
+    );
+    let result = dispatch(
+        "validate",
+        &serde_json::json!({"root": root.path(), "global_dir": root.path().join("global"), "submission": rule}),
+    )
+    .unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    let notices = result["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 1, "{result}");
+    assert_eq!(notices[0]["code"], "hint.capability");
+    assert!(notices[0]["message"].as_str().unwrap().contains("toml.v1"));
+}
+
+#[test]
+fn validate_does_not_hint_a_mixed_scope_or_a_rule_that_already_declares_ast_v1() {
+    let root = tempdir().unwrap();
+    let mixed = submission(
+        "mixed-scope",
+        "advisory",
+        serde_json::json!({"include": ["**/*.rs", "crates/**"]}),
+    );
+    let result = dispatch(
+        "validate",
+        &serde_json::json!({"root": root.path(), "global_dir": root.path().join("global"), "submission": mixed}),
+    )
+    .unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["notices"].as_array().unwrap().len(), 0, "{result}");
+
+    let mut already_ast = submission(
+        "already-ast",
+        "advisory",
+        serde_json::json!({"include": ["**/*.rs"]}),
+    );
+    already_ast["code"]["capabilities"] = serde_json::json!(["text.v1", "ast.v1"]);
+    let result = dispatch(
+        "validate",
+        &serde_json::json!({"root": root.path(), "global_dir": root.path().join("global"), "submission": already_ast}),
+    )
+    .unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    assert_eq!(result["notices"].as_array().unwrap().len(), 0, "{result}");
+}
+
+#[test]
+fn validate_hints_over_a_whole_workspace_selection_too() {
+    let root = tempdir().unwrap();
+    disk_package(
+        root.path(),
+        "rust-only-disk",
+        submission(
+            "rust-only-disk",
+            "advisory",
+            serde_json::json!({"include": ["**/*.rs"]}),
+        ),
+        None,
+        None,
+    );
+    let result = dispatch(
+        "validate",
+        &serde_json::json!({"root": root.path(), "global_dir": root.path().join("global")}),
+    )
+    .unwrap();
+    assert_eq!(result["exit_code"], 0, "{result}");
+    let notices = result["notices"].as_array().unwrap();
+    assert_eq!(notices.len(), 1, "{result}");
+    assert_eq!(notices[0]["rule_id"], "local/rust-only-disk");
+}
+
+#[test]
 fn submissions_reject_package_fixture_references() {
     let root = tempdir().unwrap();
     let mut rule = submission(

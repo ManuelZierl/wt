@@ -42,6 +42,11 @@ pub fn project(mut value: Value, detail: &str) -> Value {
     } else {
         object.insert("errors".to_owned(), json!([]));
     }
+    // A command may report its own advisory notices (e.g. `validate`'s
+    // capability hints) inline in its payload; promote them to the shared
+    // envelope field instead of leaving them nested under `data`. Absent
+    // that, the envelope carries an empty array, same as before.
+    let notices = payload.remove("notices").unwrap_or_else(|| json!([]));
     let stages = match command.as_str() {
         "new" | "update" => {
             let mut stages = vec!["validated", "formatted"];
@@ -65,7 +70,7 @@ pub fn project(mut value: Value, detail: &str) -> Value {
         }
     }
     object.insert("stages".to_owned(), json!(stages));
-    object.insert("notices".to_owned(), json!([]));
+    object.insert("notices".to_owned(), notices);
     object.insert("data".to_owned(), Value::Object(payload));
     value
 }
