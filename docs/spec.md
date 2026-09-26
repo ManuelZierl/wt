@@ -452,7 +452,8 @@ These are **WT host APIs**, not built-in Rhai functions. Pattern calls refer to 
 
 | API / value | Behavior |
 |---|---|
-| `file.path`, `file.text`, `file.span` | Normalized root-relative path, original UTF-8 source view, and whole-file span. |
+| `file.path` | Normalized root-relative path. Requires `text.v1` or `path.v1`; an `ast.v1`-only or `toml.v1`-only rule that reads `file.path` (directly, or via `path::matches`) fails WT104. |
+| `file.text`, `file.span` | Original UTF-8 source view and whole-file span. Requires `text.v1` or `ast.v1`; a `toml.v1`-only rule needs one of those added to read either. |
 | `text::lines(file)` | Finite sequence of `{text, span}` lines in source order. A terminator is excluded from a line's text/span; an ending terminator does not create an extra final line. |
 | `text::contains(text, needle)` | Case-sensitive exact substring presence; an empty needle is true. |
 | `text::starts_with(text, prefix)`, `text::ends_with(text, suffix)` | Exact, case-sensitive tests. |

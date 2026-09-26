@@ -123,6 +123,30 @@ for m in file.ast_match_context(
 }
 ```
 
+A child the context leaves out is unconstrained, not required absent: the
+context above also matches a guarded arm like `Action::Copy if cond =>
+$BODY`, since it says nothing about a guard's presence. To exclude guarded
+arms, also match the narrower context and drop any span the two share:
+
+```wt
+for m in file.ast_match_context("rust", "match a { Action::Copy => $BODY }", "match_arm") {
+    let guarded = false;
+    for g in file.ast_match_context("rust", "match a { Action::Copy if $COND => $BODY }", "match_arm") {
+        if span::contains(g.span, m.span) && span::contains(m.span, g.span) {
+            guarded = true;
+        }
+    }
+    if !guarded {
+        emit(m.node("BODY").span, "copy-arm-body");
+    }
+}
+```
+
+`file.path` (and `path::matches`, which reads it) needs `text.v1` or
+`path.v1` specifically — `ast.v1` does not cover it. An `ast.v1`-only rule
+that reads `file.path` fails WT104; add `text.v1` (or `path.v1`) if it needs
+the path as well as the structure.
+
 `ast_match` alone can express "found inside a span" by re-searching within a
 captured span, but not "found, unless some other span encloses it" (e.g. a
 call that must run inside `thread::spawn`). `span::contains` on two
@@ -146,7 +170,10 @@ for suggest_call in file.ast_match("rust", "completion::suggest($$$)") {
 
 Add `toml.v1` for structured access to a TOML document (a Cargo manifest or
 other TOML config) instead of a line-by-line regex over its text (see
-`wt capabilities` for the installed parser's identity).
+`wt capabilities` for the installed parser's identity). `toml.v1` alone does
+not cover `file.path`, `file.text`, or `file.span`; add `text.v1` (or
+`path.v1`, for `file.path` only) if a `toml.v1`-only rule also needs one of
+those.
 
 | API | Result |
 |---|---|
