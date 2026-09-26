@@ -2,7 +2,7 @@
 
 Every bug fix an agent makes can leave more behind than the fix itself: a small, documented, tested check for the pattern that caused it. `wt` (also shipped as `watchtower`) runs those checks locally — no account, daemon, network, or model calls. A finding means *look at this*, not *this is wrong*: a `violation` is a prohibited source form, a `review` is a situation worth a human's judgment. Decisions about a `review` finding are recorded against the exact evidence reviewed and reopen automatically when the owning code, the rule, or a watched dependency changes.
 
-[Kea](https://github.com/ManuelZierl/kea), a Rust terminal/editor app, turned its `AGENTS.md` invariants into wt rules. One watched a UI label that claimed to know the shell's current directory ("Current shell directory: ..."), something no linter can flag as wrong on its own — but the rule pointed an agent at the one place that invariant could break, and the agent found a real bug there: the label read `shell_ready()`, which also accepts a remote SSH shell, instead of the existing `local_shell_ready()`, so Kea could show a stale local directory as the current one.
+[Kea](https://github.com/ManuelZierl/kea), a Rust terminal/editor app, turned its `AGENTS.md` invariants into wt rules. One rule points at a UI label that says "Current shell directory". No linter can flag that label as always wrong, but the rule sent an agent to the one place where the invariant could break, and the agent found a bug: the label used `shell_ready()`, which also accepts remote SSH shells, instead of the existing `local_shell_ready()`, so Kea could show a stale local directory as current.
 
 ## The loop
 
