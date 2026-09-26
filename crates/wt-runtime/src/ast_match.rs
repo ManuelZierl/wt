@@ -2,10 +2,16 @@
 //! (`ast-grep-core` + `ast-grep-language`), linked directly (no subprocess).
 //!
 //! Grammar and engine versions are part of runtime semantics: they are
-//! reported by `wt capabilities` and, because the whole compiled crate
-//! (including this file and `Cargo.lock`) is folded into the cache/evidence
-//! digest (see `wt-core::cache::compiled_semantic_identity`), a grammar
-//! update automatically reopens affected review decisions.
+//! reported by `wt capabilities` and, because this file and `Cargo.lock` are
+//! folded into the compiled-cache identity (see
+//! `wt-core::cache::compiled_semantic_identity`), a grammar update always
+//! invalidates caches. Review evidence's `engine_digest` binds the same
+//! grammar/engine versions more narrowly (see
+//! `wt-core::engine_identity::review_engine_identity`, computed from this
+//! build's `Cargo.lock`, not this whole file): a grammar or engine version
+//! bump reopens affected review decisions automatically, while a semantics
+//! change confined to this file's matching logic requires the maintainer to
+//! bump `WRL1_SEMANTICS_EPOCH`.
 
 use anyhow::{anyhow, bail, Result};
 use ast_grep_core::meta_var::MetaVariable;

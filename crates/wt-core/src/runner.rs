@@ -2,6 +2,7 @@ use crate::cache;
 use crate::config;
 use crate::digest::semantic_digest;
 use crate::discovery::{self, Workspace};
+use crate::engine_identity;
 use crate::fixtures;
 use crate::reviews;
 use crate::rule::{self, RulePackage, Submission};
@@ -1971,7 +1972,7 @@ fn diagnostic_value(record: &Record, workspace: &Workspace, options: &Value) -> 
         "path": record.diagnostic.path,
         "file_digest": record.file_digest,
         "context_digest": record.context_digest,
-        "engine_digest": cache::compiled_semantic_identity(),
+        "engine_digest": engine_identity::review_engine_identity(&package.manifest.code.capabilities),
         "start_byte": record.diagnostic.start_byte,
         "end_byte": record.diagnostic.end_byte,
         "start_line": start.0,

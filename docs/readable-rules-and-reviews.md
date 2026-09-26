@@ -62,8 +62,21 @@ invalidate the decision. For file rules, changing any owning-file bytes invalida
 it even when the matched snippet is unchanged. Additional supporting files can
 be recorded with expected hashes. No generic tool can infer every semantic
 assumption from prose: dependencies outside the detector input set must be
-explicitly watched. There is no claim that unchanged local evidence proves that
-an external service, requirement, or unrecorded dependency remains unchanged.
+explicitly watched.
+
+`engine_digest` is that runtime-semantics binding. It is not a hash of the whole
+compiled wt binary: it is a maintainer-controlled semantics epoch plus the exact
+pinned dependency versions (read from the build's `Cargo.lock`) that implement
+matching for the rule's declared capabilities — the WRL1 interpreter always, plus
+`text.v1`'s regex engine, `path.v1`/`repo.v1`'s globs, or `ast.v1`'s ast-grep engine
+and tree-sitter grammars, whichever the rule declares. A dependency bump (a grammar
+update, say) changes `engine_digest` automatically and reopens affected decisions;
+an interpreter or matcher semantics change with no dependency bump instead requires
+the maintainer to advance the epoch by hand. A capability added after a release
+folds its own pinned dependency into the identity only for rules that declare it;
+other rules keep the identity they already had. There is no claim that unchanged
+local evidence proves that an external service, requirement, or unrecorded
+dependency remains unchanged.
 
 ## Explicit decision workflow
 

@@ -9,6 +9,7 @@ mod config;
 mod coordination;
 mod digest;
 mod discovery;
+mod engine_identity;
 mod fixtures;
 mod formatting;
 mod inspection;
